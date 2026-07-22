@@ -7,6 +7,7 @@ pub mod ids;
 pub mod import;
 pub mod jobs;
 pub mod logging;
+pub mod neighborhood;
 pub mod obsidian;
 pub mod paths;
 pub mod providers;
@@ -123,6 +124,7 @@ pub fn run() {
             commands::chat::cancel_chat,
             commands::chat::delete_chat_session,
             commands::graph::get_graph,
+            commands::graph::get_paper_neighborhood,
             commands::graph::get_topic_graph,
             commands::graph::add_manual_relation,
             commands::graph::remove_manual_relation,
