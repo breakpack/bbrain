@@ -4,6 +4,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::db::{paper_repo, settings_repo};
 use crate::error::{AppError, CommandResult};
 use crate::jobs::{self, JobType};
+use crate::neighborhood::{self, PaperNeighborhood};
 use crate::relations::{self, Graph};
 use crate::state::AppState;
 use crate::topics::{self, TopicGraph};
@@ -11,6 +12,17 @@ use crate::topics::{self, TopicGraph};
 #[tauri::command]
 pub fn get_graph(state: State<'_, AppState>) -> CommandResult<Graph> {
     Ok(relations::load_graph(&state.db.conn())?)
+}
+
+/// The ConnectedPapers-style focus graph for a single paper: its nearest
+/// neighbours by embedding similarity, the similarity/citation edges among them,
+/// and each paper's year so the UI can lay precedent below and derivative above.
+#[tauri::command]
+pub fn get_paper_neighborhood(
+    state: State<'_, AppState>,
+    paper_id: String,
+) -> CommandResult<PaperNeighborhood> {
+    Ok(neighborhood::load(&state.db.conn(), &paper_id)?)
 }
 
 /// The topic graph (the "second brain"). Rebuilt from the AI analyses when they
