@@ -5,3 +5,7 @@ src-tauri/gen/
 .DS_Store
 *.log
 graphify-out/
+
+# node_modules is a symlink in worktrees; the trailing-slash rule above misses it
+node_modules
+TASK.md

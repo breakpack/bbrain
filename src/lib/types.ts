@@ -267,6 +267,52 @@ export type PageTranslation = {
   cached: boolean;
 };
 
+// --- discover (external paper search) ---------------------------------------
+
+/**
+ * A paper found by external scholarly search (Semantic Scholar), before it is
+ * imported into the local library. Distinct from `Paper`: it carries no local
+ * id, only a source id and the metadata the search API returned.
+ */
+export type DiscoveredPaper = {
+  /** Stable source-scoped id, e.g. "semantic-scholar:<paperId>". */
+  id: string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  venue: string | null;
+  abstract: string | null;
+  /** Open-access PDF URL when the source has one; null → not directly importable. */
+  pdfUrl: string | null;
+  /** Landing page at the source or publisher, always present so the reader can
+   * open it even when there is no downloadable PDF. */
+  url: string;
+  doi: string | null;
+  citationCount: number | null;
+  /** The backend already holds a paper with this DOI / content, so importing
+   * again would only dedupe. Lets the UI say "이미 라이브러리에 있음". */
+  alreadyInLibrary: boolean;
+};
+
+export type DiscoverQuery = {
+  query: string;
+  /** 0-based offset for "더 보기" pagination. */
+  offset?: number;
+  limit?: number;
+  /** Only papers published in or after this year. */
+  yearFrom?: number;
+  /** Restrict to results that carry a downloadable open-access PDF. */
+  openAccessOnly?: boolean;
+};
+
+export type DiscoverResults = {
+  hits: DiscoveredPaper[];
+  /** Total matches the source reports, for "N건 중 표시". */
+  total: number;
+  /** Offset to pass for the next page, or null when the results are exhausted. */
+  nextOffset: number | null;
+};
+
 // --- chat and search --------------------------------------------------------
 
 export type ChatScope =
