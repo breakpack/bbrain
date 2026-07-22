@@ -1,0 +1,53 @@
+/*
+ * Bbrain design tokens — the single source of truth for DESIGN.md values.
+ * tailwind.config.js reads these variables; do not duplicate literals elsewhere.
+ */
+:root {
+  /* Color — green is the only saturated hue (DESIGN.md §7) */
+  --color-primary: #00c473;
+  --color-primary-hover: #00ad66;
+  --color-primary-soft: #e6f9f1;
+  --color-on-primary: #ffffff;
+
+  --color-canvas: #ffffff;
+  --color-canvas-soft: #fafafc;
+  --color-canvas-tint: #eaf6fc;
+
+  --color-heading: #000000;
+  --color-ink: #333333;
+  --color-ink-deepest: #041911;
+  --color-body: #a2a2a2;
+  --color-subhead: #c2c2c2;
+
+  --color-line: #ececef;
+  /* Error color is used only where accessibility requires it (DEVELOPMENT.md §15) */
+  --color-danger: #d33a3a;
+
+  --font-sans: "Noto Sans KR", "Noto Sans", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", system-ui, sans-serif;
+
+  --shadow-card: rgba(0, 0, 0, 0.08) 0px 2px 16px 3px;
+
+  --motion-fast: 120ms;
+  --motion-standard: 200ms;
+  --motion-slow: 320ms;
+  --ease-standard: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-enter: cubic-bezier(0.2, 0.6, 0.25, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-standard: 0ms;
+    --motion-slow: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

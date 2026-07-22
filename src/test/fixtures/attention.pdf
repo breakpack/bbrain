@@ -1,0 +1,109 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+5 0 obj
+<< /Length 1014 >>
+stream
+BT
+/F2 18 Tf
+1 0 0 1 72 740 Tm
+(Attention Is All You Need) Tj
+/F1 11 Tf
+1 0 0 1 72 714 Tm
+(Ashish Vaswani, Noam Shazeer, Niki Parmar) Tj
+/F2 13 Tf
+1 0 0 1 72 698 Tm
+(Abstract) Tj
+/F1 11 Tf
+1 0 0 1 72 672 Tm
+(The dominant sequence transduction models are based on complex) Tj
+/F1 11 Tf
+1 0 0 1 72 656 Tm
+(recurrent or convolutional neural networks. We propose the Transformer,) Tj
+/F1 11 Tf
+1 0 0 1 72 640 Tm
+(a new simple network architecture based solely on attention mechanisms.) Tj
+/F1 11 Tf
+1 0 0 1 72 624 Tm
+(Experiments on two machine translation tasks show these models to be) Tj
+/F1 11 Tf
+1 0 0 1 72 608 Tm
+(superior in quality while being more parallelizable.) Tj
+/F2 13 Tf
+1 0 0 1 72 592 Tm
+(Introduction) Tj
+/F1 11 Tf
+1 0 0 1 72 566 Tm
+(Recurrent neural networks have been firmly established as state of the) Tj
+/F1 11 Tf
+1 0 0 1 72 550 Tm
+(art approaches in sequence modeling. This inherently sequential nature) Tj
+/F1 11 Tf
+1 0 0 1 72 534 Tm
+(precludes parallelization within training examples.) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 5 0 R >>
+endobj
+7 0 obj
+<< /Length 653 >>
+stream
+BT
+/F2 13 Tf
+1 0 0 1 72 740 Tm
+(Results) Tj
+/F1 11 Tf
+1 0 0 1 72 714 Tm
+(On the WMT 2014 English-to-German translation task, the Transformer) Tj
+/F1 11 Tf
+1 0 0 1 72 698 Tm
+(achieves a BLEU score of 28.4, improving over the best previously) Tj
+/F1 11 Tf
+1 0 0 1 72 682 Tm
+(reported models by over 2 BLEU.) Tj
+/F2 13 Tf
+1 0 0 1 72 666 Tm
+(Conclusion) Tj
+/F1 11 Tf
+1 0 0 1 72 640 Tm
+(We presented the Transformer, the first sequence transduction model) Tj
+/F1 11 Tf
+1 0 0 1 72 624 Tm
+(based entirely on attention. It can be trained significantly faster than) Tj
+/F1 11 Tf
+1 0 0 1 72 608 Tm
+(architectures based on recurrent or convolutional layers.) Tj
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000191 00000 n 
+0000000266 00000 n 
+0000001332 00000 n 
+0000001468 00000 n 
+0000002172 00000 n 
+trailer
+<< /Size 9 /Root 1 0 R >>
+startxref
+2308
+%%EOF

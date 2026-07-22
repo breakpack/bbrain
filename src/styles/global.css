@@ -1,0 +1,67 @@
+@import "./tokens.css";
+/* Ships with pdfjs-dist; the text layer will not align without it. */
+@import "pdfjs-dist/web/pdf_viewer.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-canvas text-ink;
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply text-ink-heading font-bold;
+  }
+
+  /* Visible focus ring on every interactive surface (DEVELOPMENT.md §15) */
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: var(--color-primary-soft);
+  }
+}
+
+@layer components {
+  .eyebrow {
+    @apply text-eyebrow uppercase tracking-wide text-primary;
+  }
+}
+
+/* The text layer overlays the canvas exactly; pdf.js positions the spans. */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  text-align: initial;
+}
+
+/* WKWebView ignores a transparent ::selection, so the native selection can't be
+   restyled to hug the text. Disable native selection entirely and drive a custom
+   drag-selection that draws its own clipped rectangles instead (§9.5). Copy is
+   handled explicitly by the viewer. !important overrides pdf.js's user-select. */
+.textLayer,
+.textLayer :is(span, br) {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
