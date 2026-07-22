@@ -46,6 +46,7 @@ pub fn resolve_provider(app: &AppHandle) -> Result<ActiveProvider> {
     let model = match provider {
         Provider::OpenAi => settings.openai_model,
         Provider::Anthropic => settings.anthropic_model,
+        Provider::DeepSeek => settings.deepseek_model,
     }
     .ok_or_else(|| AppError::ModelUnsupported("no model selected".into()))?;
 

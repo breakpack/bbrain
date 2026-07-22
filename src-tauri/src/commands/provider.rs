@@ -4,8 +4,8 @@ use tauri::State;
 use crate::db::settings_repo;
 use crate::error::{AppError, CommandResult, Result};
 use crate::providers::{
-    anthropic::AnthropicProvider, openai::OpenAiProvider, LlmProvider, ModelDescriptor, Provider,
-    ProviderStatus,
+    anthropic::AnthropicProvider, deepseek::DeepSeekProvider, openai::OpenAiProvider, LlmProvider,
+    ModelDescriptor, Provider, ProviderStatus,
 };
 use crate::secrets::CredentialStore;
 use crate::state::AppState;
@@ -57,6 +57,7 @@ pub async fn configure_provider(
         match provider {
             Provider::OpenAi => patch.openai_model = Some(model.clone()),
             Provider::Anthropic => patch.anthropic_model = Some(model.clone()),
+            Provider::DeepSeek => patch.deepseek_model = Some(model.clone()),
         }
         settings_repo::update(&conn, &patch)?;
     }
@@ -85,6 +86,7 @@ pub async fn validate_provider(
         match provider {
             Provider::OpenAi => settings.openai_model,
             Provider::Anthropic => settings.anthropic_model,
+            Provider::DeepSeek => settings.deepseek_model,
         }
     };
 
@@ -128,14 +130,22 @@ pub fn remove_provider(state: State<'_, AppState>, provider: Provider) -> Comman
     Ok(())
 }
 
+/// Picks any other provider that still has a key, so removing the active
+/// provider hands off to a working one rather than leaving nothing selected.
 fn other_configured_provider(
     settings: &settings_repo::Settings,
     removed: Provider,
 ) -> Option<Provider> {
-    match removed {
-        Provider::OpenAi if settings.has_anthropic_key => Some(Provider::Anthropic),
-        Provider::Anthropic if settings.has_openai_key => Some(Provider::OpenAi),
-        _ => None,
+    [Provider::OpenAi, Provider::Anthropic, Provider::DeepSeek]
+        .into_iter()
+        .find(|&candidate| candidate != removed && has_key(settings, candidate))
+}
+
+fn has_key(settings: &settings_repo::Settings, provider: Provider) -> bool {
+    match provider {
+        Provider::OpenAi => settings.has_openai_key,
+        Provider::Anthropic => settings.has_anthropic_key,
+        Provider::DeepSeek => settings.has_deepseek_key,
     }
 }
 
@@ -149,6 +159,7 @@ async fn list_models(provider: Provider, api_key: &str) -> Result<Vec<ModelDescr
     match provider {
         Provider::OpenAi => OpenAiProvider::new(api_key).list_models().await,
         Provider::Anthropic => AnthropicProvider::new(api_key).list_models().await,
+        Provider::DeepSeek => DeepSeekProvider::new(api_key).list_models().await,
     }
 }
 
@@ -176,9 +187,12 @@ mod tests {
             active_provider: active,
             openai_model: None,
             anthropic_model: None,
+            deepseek_model: None,
             has_openai_key: openai,
             has_anthropic_key: anthropic,
+            has_deepseek_key: false,
             translation_language: "ko".into(),
+            translation_engine: "google".into(),
             obsidian_vault_path: None,
             embedding_model_id: "intfloat/multilingual-e5-small".into(),
             embedding_dimension: 384,

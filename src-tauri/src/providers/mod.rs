@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod deepseek;
 pub mod google_translate;
 pub mod openai;
 pub mod request;
@@ -15,6 +16,7 @@ use request::{ChatRequest, StructuredRequest};
 pub enum Provider {
     OpenAi,
     Anthropic,
+    DeepSeek,
 }
 
 impl Provider {
@@ -22,6 +24,7 @@ impl Provider {
         match self {
             Self::OpenAi => "openai",
             Self::Anthropic => "anthropic",
+            Self::DeepSeek => "deepseek",
         }
     }
 
@@ -29,6 +32,7 @@ impl Provider {
         match value {
             "openai" => Some(Self::OpenAi),
             "anthropic" => Some(Self::Anthropic),
+            "deepseek" => Some(Self::DeepSeek),
             _ => None,
         }
     }
@@ -37,6 +41,7 @@ impl Provider {
         match self {
             Self::OpenAi => "OpenAI",
             Self::Anthropic => "Anthropic",
+            Self::DeepSeek => "DeepSeek",
         }
     }
 
@@ -47,6 +52,9 @@ impl Provider {
         match self {
             Self::OpenAi => "gpt-5.6-terra",
             Self::Anthropic => "claude-sonnet-5",
+            // `deepseek-reasoner` is stronger but slower and its structured-output
+            // support is narrower, so the balanced default is the chat model.
+            Self::DeepSeek => "deepseek-chat",
         }
     }
 }
@@ -100,6 +108,7 @@ pub trait LlmProvider {
 pub enum AnyProvider {
     OpenAi(openai::OpenAiProvider),
     Anthropic(anthropic::AnthropicProvider),
+    DeepSeek(deepseek::DeepSeekProvider),
 }
 
 impl AnyProvider {
@@ -107,6 +116,7 @@ impl AnyProvider {
         match provider {
             Provider::OpenAi => Self::OpenAi(openai::OpenAiProvider::new(api_key)),
             Provider::Anthropic => Self::Anthropic(anthropic::AnthropicProvider::new(api_key)),
+            Provider::DeepSeek => Self::DeepSeek(deepseek::DeepSeekProvider::new(api_key)),
         }
     }
 
@@ -114,6 +124,7 @@ impl AnyProvider {
         match self {
             Self::OpenAi(p) => p.list_models().await,
             Self::Anthropic(p) => p.list_models().await,
+            Self::DeepSeek(p) => p.list_models().await,
         }
     }
 
@@ -124,6 +135,7 @@ impl AnyProvider {
         match self {
             Self::OpenAi(p) => p.generate_structured(request).await,
             Self::Anthropic(p) => p.generate_structured(request).await,
+            Self::DeepSeek(p) => p.generate_structured(request).await,
         }
     }
 
@@ -135,6 +147,7 @@ impl AnyProvider {
         match self {
             Self::OpenAi(p) => p.stream_chat(request, sink).await,
             Self::Anthropic(p) => p.stream_chat(request, sink).await,
+            Self::DeepSeek(p) => p.stream_chat(request, sink).await,
         }
     }
 }
@@ -184,7 +197,7 @@ mod tests {
 
     #[test]
     fn provider_round_trips_through_its_stored_string() {
-        for provider in [Provider::OpenAi, Provider::Anthropic] {
+        for provider in [Provider::OpenAi, Provider::Anthropic, Provider::DeepSeek] {
             assert_eq!(Provider::from_str(provider.as_str()), Some(provider));
         }
         assert_eq!(Provider::from_str("gemini"), None);

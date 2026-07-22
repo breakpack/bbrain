@@ -12,11 +12,16 @@ pub struct Settings {
     pub active_provider: Option<Provider>,
     pub openai_model: Option<String>,
     pub anthropic_model: Option<String>,
+    pub deepseek_model: Option<String>,
     /// Whether a key for each provider exists in the OS credential store.
     /// The key itself never crosses the IPC boundary.
     pub has_openai_key: bool,
     pub has_anthropic_key: bool,
+    pub has_deepseek_key: bool,
     pub translation_language: String,
+    /// Which engine translates the reader's page/selection: `google` (free) or
+    /// `llm` (the active provider). Free by default.
+    pub translation_engine: String,
     pub obsidian_vault_path: Option<String>,
     pub embedding_model_id: String,
     pub embedding_dimension: i64,
@@ -33,7 +38,9 @@ pub struct SettingsPatch {
     pub active_provider: Option<Provider>,
     pub openai_model: Option<String>,
     pub anthropic_model: Option<String>,
+    pub deepseek_model: Option<String>,
     pub translation_language: Option<String>,
+    pub translation_engine: Option<String>,
     pub obsidian_vault_path: Option<String>,
     pub network_notice_accepted: Option<bool>,
     pub onboarding_completed: Option<bool>,
@@ -56,7 +63,8 @@ pub fn get(conn: &Connection) -> Result<Settings> {
                 openai_credential_ref, anthropic_credential_ref,
                 translation_language, obsidian_vault_path,
                 embedding_model_id, embedding_dimension, index_generation,
-                network_notice_accepted_at, onboarding_completed_at
+                network_notice_accepted_at, onboarding_completed_at,
+                deepseek_model, deepseek_credential_ref, translation_engine
          FROM settings WHERE id = 1",
         [],
         |row| {
@@ -76,6 +84,9 @@ pub fn get(conn: &Connection) -> Result<Settings> {
                 index_generation: row.get(10)?,
                 network_notice_accepted_at: row.get(11)?,
                 onboarding_completed_at: row.get(12)?,
+                deepseek_model: row.get(13)?,
+                has_deepseek_key: row.get::<_, Option<String>>(14)?.is_some(),
+                translation_engine: row.get(15)?,
             })
         },
     )?;
@@ -110,10 +121,22 @@ pub fn update(conn: &Connection, patch: &SettingsPatch) -> Result<Settings> {
             params![model, now],
         )?;
     }
+    if let Some(model) = &patch.deepseek_model {
+        conn.execute(
+            "UPDATE settings SET deepseek_model = ?1, updated_at = ?2 WHERE id = 1",
+            params![model, now],
+        )?;
+    }
     if let Some(language) = &patch.translation_language {
         conn.execute(
             "UPDATE settings SET translation_language = ?1, updated_at = ?2 WHERE id = 1",
             params![language, now],
+        )?;
+    }
+    if let Some(engine) = &patch.translation_engine {
+        conn.execute(
+            "UPDATE settings SET translation_engine = ?1, updated_at = ?2 WHERE id = 1",
+            params![engine, now],
         )?;
     }
     if let Some(path) = &patch.obsidian_vault_path {
@@ -156,6 +179,9 @@ pub fn set_credential_ref(
         Provider::Anthropic => {
             "UPDATE settings SET anthropic_credential_ref = ?1, updated_at = ?2 WHERE id = 1"
         }
+        Provider::DeepSeek => {
+            "UPDATE settings SET deepseek_credential_ref = ?1, updated_at = ?2 WHERE id = 1"
+        }
     };
     conn.execute(sql, params![credential_ref, now])?;
     Ok(())
@@ -166,6 +192,7 @@ pub fn credential_ref(conn: &Connection, provider: Provider) -> Result<Option<St
     let column = match provider {
         Provider::OpenAi => "openai_credential_ref",
         Provider::Anthropic => "anthropic_credential_ref",
+        Provider::DeepSeek => "deepseek_credential_ref",
     };
     let value = conn
         .query_row(
