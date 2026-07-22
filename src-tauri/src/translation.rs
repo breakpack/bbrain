@@ -1,10 +1,16 @@
+use std::collections::HashMap;
+
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::{AppHandle, Manager};
 
+use crate::analysis::{resolve_provider, ActiveProvider};
 use crate::db::page_repo;
+use crate::db::settings_repo::{self, Settings};
 use crate::error::{AppError, Result};
-use crate::providers::google_translate;
+use crate::providers::request::StructuredRequest;
+use crate::providers::{google_translate, Provider};
 use crate::state::AppState;
 use crate::time::now_iso8601;
 
@@ -14,11 +20,48 @@ use crate::time::now_iso8601;
 /// segments map back to source sentences (the unit shape changed) (§9.4).
 pub const PROMPT_VERSION: &str = "3";
 
-/// Stored in the cache row's provider/model columns. Translation always uses the
-/// free Google endpoint rather than a configured LLM provider, so these are
-/// fixed rather than read from settings.
+/// Identity of the free Google engine, stored in the cache row's provider/model
+/// columns. The LLM engine instead stores the active provider + model, so the
+/// two engines never share a cached translation (§9.4).
 const TRANSLATOR_PROVIDER: &str = "google";
 const TRANSLATOR_MODEL: &str = "gtx";
+
+/// Which engine translates the reader's page/selection. `translation_engine` is
+/// a free-text settings column; anything other than `llm` means the free engine.
+fn use_llm_engine(settings: &Settings) -> bool {
+    settings.translation_engine == "llm"
+}
+
+/// The `(provider, model)` written to (and matched against) the translation cache
+/// row, implementing the §9.4 cache key. Google is fixed; the LLM engine keys on
+/// the active provider and its model so re-selecting either invalidates old
+/// translations. `None` when the LLM engine is chosen but nothing is configured
+/// yet — the caller treats that as "no cached translation" / "cannot translate".
+fn cache_identity(settings: &Settings) -> Option<(String, String)> {
+    if use_llm_engine(settings) {
+        let provider = settings.active_provider?;
+        let model = match provider {
+            Provider::OpenAi => settings.openai_model.clone(),
+            Provider::Anthropic => settings.anthropic_model.clone(),
+            Provider::DeepSeek => settings.deepseek_model.clone(),
+        }?;
+        Some((provider.as_str().to_string(), model))
+    } else {
+        Some((TRANSLATOR_PROVIDER.to_string(), TRANSLATOR_MODEL.to_string()))
+    }
+}
+
+/// Human name for the target language, used in the LLM prompt. Falls back to the
+/// raw code so an unlisted language still translates.
+fn language_name(code: &str) -> &str {
+    match code {
+        "ko" => "한국어",
+        "en" => "영어",
+        "ja" => "일본어",
+        "zh" => "중국어",
+        other => other,
+    }
+}
 
 /// One translated segment (roughly a sentence) and the source sentences it
 /// covers. The viewer highlights every rectangle behind those sentences when the
@@ -160,20 +203,30 @@ pub async fn translate_page(
         (sentences, info.text_hash)
     };
 
-    // Cache key: paper + page + page text hash + language + pipeline version. The
-    // translator is fixed, so provider/model are not part of the identity; a
-    // saved result is returned without a network call (§9.4).
-    {
+    // Cache key: paper + page + page text hash + language + engine identity +
+    // pipeline version. A saved result is returned without a network call (§9.4).
+    let settings = {
         let state = app.state::<AppState>();
         let conn = state.db.conn();
         if let Some(cached) = read_cached_page(&conn, paper_id, page_number, target_language)? {
             return Ok(cached);
         }
-    }
+        settings_repo::get(&conn)?
+    };
 
-    let (source, ranges) = build_source(&sentences);
-    let segments = google_translate::translate_segments(&source, target_language).await?;
-    let units = map_segments(&ranges, &segments);
+    let (provider_tag, model_tag) = cache_identity(&settings)
+        .ok_or_else(|| AppError::ModelUnsupported("no provider selected for AI translation".into()))?;
+
+    let units = if use_llm_engine(&settings) {
+        // The LLM path sends only sentence IDs and originals, and its result must
+        // keep every input ID (§9.4); resolve the active provider for the call.
+        let active = resolve_provider(app)?;
+        translate_page_llm(&active, &sentences, target_language).await?
+    } else {
+        let (source, ranges) = build_source(&sentences);
+        let segments = google_translate::translate_segments(&source, target_language).await?;
+        map_segments(&ranges, &segments)
+    };
 
     let result = PageTranslation {
         page_number,
@@ -182,7 +235,8 @@ pub async fn translate_page(
         cached: false,
     };
 
-    // Only a complete translation is cached (§9.4).
+    // Only a complete translation is cached (§9.4). The engine identity is stored
+    // so switching engine/provider/model does not reuse this row.
     let state = app.state::<AppState>();
     state.db.conn().execute(
         "INSERT OR REPLACE INTO translations
@@ -194,8 +248,8 @@ pub async fn translate_page(
             page_number,
             target_language,
             source_hash,
-            TRANSLATOR_PROVIDER,
-            TRANSLATOR_MODEL,
+            provider_tag,
+            model_tag,
             PROMPT_VERSION,
             serde_json::to_string(&result).unwrap_or_default(),
             now_iso8601(),
@@ -205,16 +259,145 @@ pub async fn translate_page(
     Ok(result)
 }
 
+/// Translates a page with the active AI provider. Only the sentence IDs and their
+/// originals are sent; the response must return a translation for every input ID
+/// (§9.4). A missing or empty sentence is an error, so a partial page is never
+/// cached as complete.
+async fn translate_page_llm(
+    active: &ActiveProvider,
+    sentences: &[page_repo::Sentence],
+    target_language: &str,
+) -> Result<Vec<TranslatedUnit>> {
+    let items: Vec<serde_json::Value> = sentences
+        .iter()
+        .map(|sentence| json!({ "id": sentence.id, "text": sentence.text }))
+        .collect();
+
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "translations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "text": { "type": "string" }
+                    },
+                    "required": ["id", "text"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["translations"],
+        "additionalProperties": false
+    });
+
+    let request = StructuredRequest {
+        model: active.model.clone(),
+        system: "당신은 학술 논문 번역기입니다. 원문의 의미를 정확히 옮기고 전문 용어를 자연스럽게 번역하세요."
+            .into(),
+        instructions: format!(
+            "<paper> 안에는 각 문장의 id와 원문(text)이 담긴 JSON 배열이 있습니다. \
+             각 문장을 {}(으)로 번역하세요. 모든 입력 id를 그대로 유지하고 하나도 빠뜨리거나 \
+             추가하지 마세요. translations 배열에 각 항목을 {{id, text}} 형태로 반환하세요.",
+            language_name(target_language)
+        ),
+        source_material: serde_json::to_string(&items).unwrap_or_default(),
+        schema,
+        schema_name: "page_translation".into(),
+        max_output_tokens: 8192,
+    };
+
+    let value = active.client.generate_structured(request).await?;
+
+    let mut translations: HashMap<String, String> = HashMap::new();
+    for entry in value["translations"].as_array().into_iter().flatten() {
+        if let (Some(id), Some(text)) = (entry["id"].as_str(), entry["text"].as_str()) {
+            translations.insert(id.to_string(), text.to_string());
+        }
+    }
+
+    let mut units = Vec::with_capacity(sentences.len());
+    for (index, sentence) in sentences.iter().enumerate() {
+        let text = translations
+            .get(&sentence.id)
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+            // A dropped sentence breaks click-to-source, so reject the whole page
+            // rather than caching a page missing lines (§9.4).
+            .ok_or_else(|| AppError::ProviderResponse("translation omitted a sentence".into()))?;
+
+        units.push(TranslatedUnit {
+            id: format!("u{index}"),
+            text,
+            sentence_ids: vec![sentence.id.clone()],
+            paragraph_index: sentence.paragraph_index,
+        });
+    }
+
+    Ok(units)
+}
+
+/// Translates a free-form selection with the active AI provider.
+async fn translate_selection_llm(
+    active: &ActiveProvider,
+    text: &str,
+    target_language: &str,
+) -> Result<String> {
+    let schema = json!({
+        "type": "object",
+        "properties": { "translation": { "type": "string" } },
+        "required": ["translation"],
+        "additionalProperties": false
+    });
+
+    let request = StructuredRequest {
+        model: active.model.clone(),
+        system: "당신은 번역기입니다. 원문의 의미를 정확히 옮기세요.".into(),
+        instructions: format!(
+            "<paper> 안의 텍스트를 {}(으)로 번역하여 translation 필드로 반환하세요.",
+            language_name(target_language)
+        ),
+        source_material: text.to_string(),
+        schema,
+        schema_name: "selection_translation".into(),
+        max_output_tokens: 4096,
+    };
+
+    let value = active.client.generate_structured(request).await?;
+    value["translation"]
+        .as_str()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| AppError::ProviderResponse("translation was empty".into()))
+}
+
 /// Translates a free-form selection the reader dragged over the page with the
-/// free Google endpoint. Ad-hoc and not cached — a selection has no stable
-/// identity to key on, and the reader asked for this exact span once (§9.3).
-pub async fn translate_selection(text: &str, target_language: &str) -> Result<String> {
+/// configured engine. Ad-hoc and not cached — a selection has no stable identity
+/// to key on, and the reader asked for this exact span once (§9.3).
+pub async fn translate_selection(
+    app: &AppHandle,
+    text: &str,
+    target_language: &str,
+) -> Result<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err(AppError::InvalidInput("selection is empty".into()));
     }
 
-    google_translate::translate_text(trimmed, target_language).await
+    let use_llm = {
+        let state = app.state::<AppState>();
+        let conn = state.db.conn();
+        use_llm_engine(&settings_repo::get(&conn)?)
+    };
+
+    if use_llm {
+        let active = resolve_provider(app)?;
+        translate_selection_llm(&active, trimmed, target_language).await
+    } else {
+        google_translate::translate_text(trimmed, target_language).await
+    }
 }
 
 /// Returns a previously saved translation for the page without a network call,
@@ -244,13 +427,28 @@ pub fn read_cached_page(
         return Ok(None);
     };
 
+    // The cache is engine-specific: a Google translation must not surface when the
+    // LLM engine is active, and vice versa (§9.4). An LLM engine with no provider
+    // configured has no identity, so there is nothing to restore.
+    let Some((provider_tag, model_tag)) = cache_identity(&settings_repo::get(conn)?) else {
+        return Ok(None);
+    };
+
     let payload: Option<String> = conn
         .query_row(
             "SELECT payload FROM translations
              WHERE paper_id = ?1 AND page_number = ?2 AND target_language = ?3
-               AND source_hash = ?4 AND prompt_version = ?5
+               AND source_hash = ?4 AND provider = ?5 AND model = ?6 AND prompt_version = ?7
              ORDER BY created_at DESC LIMIT 1",
-            params![paper_id, page_number, target_language, info.text_hash, PROMPT_VERSION],
+            params![
+                paper_id,
+                page_number,
+                target_language,
+                info.text_hash,
+                provider_tag,
+                model_tag,
+                PROMPT_VERSION
+            ],
             |row| row.get(0),
         )
         .optional()?;
@@ -450,5 +648,86 @@ mod tests {
         // A pipeline change must invalidate cached translations, so the constant
         // is stored with every row rather than assumed.
         assert!(!PROMPT_VERSION.is_empty());
+    }
+
+    fn base_settings() -> Settings {
+        Settings {
+            language: "ko".into(),
+            active_provider: None,
+            openai_model: None,
+            anthropic_model: None,
+            deepseek_model: None,
+            has_openai_key: false,
+            has_anthropic_key: false,
+            has_deepseek_key: false,
+            translation_language: "ko".into(),
+            translation_engine: "google".into(),
+            obsidian_vault_path: None,
+            embedding_model_id: "intfloat/multilingual-e5-small".into(),
+            embedding_dimension: 384,
+            index_generation: 1,
+            network_notice_accepted_at: None,
+            onboarding_completed_at: None,
+        }
+    }
+
+    #[test]
+    fn the_free_engine_keys_the_cache_on_the_fixed_google_identity() {
+        let settings = base_settings();
+        assert_eq!(
+            cache_identity(&settings),
+            Some(("google".to_string(), "gtx".to_string()))
+        );
+    }
+
+    #[test]
+    fn the_llm_engine_keys_the_cache_on_the_active_provider_and_model() {
+        let settings = Settings {
+            translation_engine: "llm".into(),
+            active_provider: Some(Provider::DeepSeek),
+            deepseek_model: Some("deepseek-chat".into()),
+            ..base_settings()
+        };
+        assert_eq!(
+            cache_identity(&settings),
+            Some(("deepseek".to_string(), "deepseek-chat".to_string()))
+        );
+    }
+
+    #[test]
+    fn the_llm_engine_without_a_provider_has_no_cache_identity() {
+        let settings = Settings {
+            translation_engine: "llm".into(),
+            ..base_settings()
+        };
+        assert!(cache_identity(&settings).is_none());
+    }
+
+    #[test]
+    fn switching_the_engine_does_not_reuse_the_other_engines_translation() {
+        let db = Database::open_in_memory().unwrap();
+        let hash = seed_page(&db, "p1", 1, "Hello world");
+        // A page translated by the free engine (provider 'google', model 'gtx').
+        store_translation(&db, "p1", 1, &hash, "ko");
+
+        // Reading under the default (google) engine restores it...
+        assert!(read_cached_page(&db.conn(), "p1", 1, "ko").unwrap().is_some());
+
+        // ...but after switching to the LLM engine the Google row is not served.
+        settings_repo::update(
+            &db.conn(),
+            &settings_repo::SettingsPatch {
+                translation_engine: Some("llm".into()),
+                active_provider: Some(Provider::Anthropic),
+                anthropic_model: Some("claude-sonnet-5".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(
+            read_cached_page(&db.conn(), "p1", 1, "ko").unwrap().is_none(),
+            "the LLM engine must not reuse a Google translation"
+        );
     }
 }
