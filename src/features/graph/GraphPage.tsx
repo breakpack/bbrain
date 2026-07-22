@@ -275,6 +275,9 @@ function TopicGraphView({
                 );
               })}
             </div>
+            <p className="text-caption text-ink-subhead">
+              원의 크기는 그 개념을 다룬 논문 수예요. 개념을 누르면 이어진 개념만 밝게 남습니다.
+            </p>
           </section>
 
           {selected && (
