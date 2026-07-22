@@ -239,6 +239,10 @@ export const api = {
   getTopicGraph: (rebuild = false) =>
     invoke<TopicGraph>("get_topic_graph", { rebuild }),
 
+  /// Exports the topic graph to the configured Obsidian vault as linked notes.
+  /// Returns the number of topic notes written.
+  exportGraphToObsidian: () => invoke<number>("export_graph_to_obsidian"),
+
   addManualRelation: (sourcePaperId: string, targetPaperId: string) =>
     invoke<void>("add_manual_relation", { input: { sourcePaperId, targetPaperId } }),
 

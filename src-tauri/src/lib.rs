@@ -135,6 +135,7 @@ pub fn run() {
             commands::graph::add_manual_relation,
             commands::graph::remove_manual_relation,
             commands::graph::configure_obsidian,
+            commands::graph::export_graph_to_obsidian,
             commands::graph::sync_obsidian,
             commands::graph::list_sync_records,
         ])

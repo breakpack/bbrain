@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import cytoscape, { type Core } from "cytoscape";
-import { ArrowLeft, GitFork, Maximize2, RefreshCw } from "lucide-react";
+import { ArrowLeft, FileDown, GitFork, Maximize2, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/Badge";
@@ -123,6 +123,7 @@ function TopicGraphView({
     mutationFn: () => api.getTopicGraph(true),
     onSuccess: (data) => client.setQueryData(["topic-graph"], data),
   });
+  const exportObsidian = useMutation({ mutationFn: () => api.exportGraphToObsidian() });
 
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
@@ -243,15 +244,33 @@ function TopicGraphView({
       containerRef={containerRef}
       onFit={() => cyRef.current?.fit(undefined, 40)}
       extraToolbar={
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => rebuild.mutate()}
-          loading={rebuild.isPending}
-        >
-          <RefreshCw aria-hidden className="h-4 w-4" />
-          재구성
-        </Button>
+        <>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => rebuild.mutate()}
+            loading={rebuild.isPending}
+          >
+            <RefreshCw aria-hidden className="h-4 w-4" />
+            재구성
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => exportObsidian.mutate()}
+            loading={exportObsidian.isPending}
+            title={
+              exportObsidian.isError
+                ? errorMessage(exportObsidian.error)
+                : exportObsidian.data != null
+                  ? `${exportObsidian.data}개 토픽 노트를 내보냈습니다`
+                  : "토픽 그래프를 Obsidian 보관함으로 내보내기"
+            }
+          >
+            <FileDown aria-hidden className="h-4 w-4" />
+            {exportObsidian.data != null ? `Obsidian ✓ ${exportObsidian.data}` : "Obsidian 내보내기"}
+          </Button>
+        </>
       }
       empty={
         empty

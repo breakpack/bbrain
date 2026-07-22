@@ -120,6 +120,13 @@ pub fn configure_obsidian(
     Ok(())
 }
 
+/// Exports the topic graph to the configured Obsidian vault as linked notes so
+/// its Graph View shows the concept map. Returns the number of topic notes.
+#[tauri::command]
+pub fn export_graph_to_obsidian(app: AppHandle) -> CommandResult<usize> {
+    Ok(crate::obsidian::export_topic_graph(&app)?)
+}
+
 /// Re-syncs everything, or one paper.
 #[tauri::command]
 pub fn sync_obsidian(state: State<'_, AppState>, paper_id: Option<String>) -> CommandResult<()> {

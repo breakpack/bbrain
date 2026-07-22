@@ -238,6 +238,87 @@ fn escape(value: &str) -> String {
 
 /// Wiki links cannot contain the characters Obsidian uses for aliases and
 /// embeds.
+/// Exports the topic graph ("second brain") to the vault as one note per topic,
+/// linking related topics and member papers with `[[wiki links]]` so Obsidian's
+/// Graph View renders the concept map. Fully Bbrain-managed and regenerated on
+/// each export (§13). Returns how many topic notes were written.
+pub fn export_topic_graph(app: &AppHandle) -> Result<usize> {
+    use std::collections::HashMap;
+
+    let state = app.state::<AppState>();
+    let (vault, graph) = {
+        let conn = state.db.conn();
+        let vault = settings_repo::get(&conn)?.obsidian_vault_path.ok_or_else(|| {
+            AppError::VaultUnavailable("Obsidian 보관함이 설정되지 않았습니다.".into())
+        })?;
+        (vault, crate::topics::load_topic_graph(&conn)?)
+    };
+
+    if graph.nodes.is_empty() {
+        return Ok(0);
+    }
+
+    let topics_dir = Path::new(&vault).join("Bbrain").join("Topics");
+    std::fs::create_dir_all(&topics_dir).map_err(|e| AppError::VaultUnavailable(e.to_string()))?;
+
+    let label_by_id: HashMap<&str, &str> = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node.label.as_str()))
+        .collect();
+
+    // Undirected adjacency, storing each neighbour's file-safe name for linking.
+    let mut related: HashMap<&str, Vec<String>> = HashMap::new();
+    for edge in &graph.edges {
+        let (Some(a), Some(b)) = (
+            label_by_id.get(edge.source.as_str()),
+            label_by_id.get(edge.target.as_str()),
+        ) else {
+            continue;
+        };
+        related.entry(edge.source.as_str()).or_default().push(safe_file_name(b));
+        related.entry(edge.target.as_str()).or_default().push(safe_file_name(a));
+    }
+
+    let mut written = 0;
+    for node in &graph.nodes {
+        let mut body = format!(
+            "# {}\n\n_{}편의 논문에서 추출된 개념_\n\n",
+            node.label, node.paper_count
+        );
+
+        if let Some(rels) = related.get(node.id.as_str()) {
+            let mut uniq = rels.clone();
+            uniq.sort();
+            uniq.dedup();
+            if !uniq.is_empty() {
+                body.push_str("## 관련 개념\n");
+                for name in uniq {
+                    body.push_str(&format!("- [[{name}]]\n"));
+                }
+                body.push('\n');
+            }
+        }
+
+        if !node.papers.is_empty() {
+            body.push_str("## 논문\n");
+            for paper in &node.papers {
+                let short: String = paper.id.chars().take(8).collect();
+                body.push_str(&format!("- [[{}-{}]]\n", safe_file_name(&paper.title), short));
+            }
+            body.push('\n');
+        }
+
+        let note = format!("{MANAGED_START}\n{body}{MANAGED_END}\n");
+        let path = topics_dir.join(format!("{}.md", safe_file_name(&node.label)));
+        write_atomically(&path, &note)?;
+        written += 1;
+    }
+
+    let _ = app.emit(SYNC_STATUS, ());
+    Ok(written)
+}
+
 pub fn sanitize_link(title: &str) -> String {
     title
         .replace(['[', ']', '|', '#', '^'], " ")
