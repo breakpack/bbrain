@@ -105,6 +105,20 @@ pub async fn translate_selection(
     Ok(translation::translate_selection(&app, &text, &language).await?)
 }
 
+/// Explains a selected passage in plain Korean using the active provider — the
+/// in-reader "AI 설명" action.
+#[tauri::command]
+pub async fn explain_selection(app: AppHandle, text: String) -> CommandResult<String> {
+    Ok(crate::insight::explain_selection(&app, &text).await?)
+}
+
+/// Synthesizes a paper's highlights into a summary using the active provider —
+/// the "AI 종합" action in the highlights panel.
+#[tauri::command]
+pub async fn summarize_highlights(app: AppHandle, paper_id: String) -> CommandResult<String> {
+    Ok(crate::insight::summarize_highlights(&app, &paper_id).await?)
+}
+
 /// Returns a saved translation for a page, or `None` if it was never translated.
 /// Read-only: never contacts the provider, so the viewer can restore a prior
 /// translation automatically when a page comes into view.

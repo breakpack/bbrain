@@ -8,6 +8,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -336,6 +337,20 @@ export function ViewerPage({
     }
   };
 
+  const explainSelection = async () => {
+    if (!selection.current) return;
+    const text = selection.current.pages.map((page) => page.selectedText).join(" ").trim();
+    if (text.length === 0) return;
+
+    setSnippet({ status: "loading", text: "" });
+    try {
+      const explanation = await api.explainSelection(text);
+      setSnippet({ status: "done", text: explanation });
+    } catch (cause) {
+      setSnippet({ status: "error", text: errorMessage(cause) });
+    }
+  };
+
   const dismissSelection = () => {
     selection.clear();
     setSnippet(null);
@@ -512,6 +527,14 @@ export function ViewerPage({
                 >
                   <Languages aria-hidden className="h-4 w-4" />
                   번역
+                </button>
+                <button
+                  aria-label="이 부분 AI 설명"
+                  onClick={() => void explainSelection()}
+                  className="flex items-center gap-1 rounded-sm px-2 py-1 text-caption text-ink-body hover:text-primary"
+                >
+                  <Sparkles aria-hidden className="h-4 w-4" />
+                  설명
                 </button>
                 <button
                   aria-label="선택 취소"

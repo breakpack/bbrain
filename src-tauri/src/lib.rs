@@ -6,6 +6,7 @@ pub mod discover;
 pub mod error;
 pub mod ids;
 pub mod import;
+pub mod insight;
 pub mod jobs;
 pub mod logging;
 pub mod neighborhood;
@@ -119,6 +120,8 @@ pub fn run() {
             commands::ai::translate_page,
             commands::ai::translate_selection,
             commands::ai::get_cached_translation,
+            commands::ai::explain_selection,
+            commands::ai::summarize_highlights,
             commands::chat::search_library,
             commands::chat::create_chat_session,
             commands::chat::list_chat_sessions,

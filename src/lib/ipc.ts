@@ -167,6 +167,13 @@ export const api = {
   translateSelection: (text: string, targetLanguage?: string) =>
     invoke<string>("translate_selection", { text, targetLanguage }),
 
+  /// Explains a selected passage in plain Korean via the active provider.
+  explainSelection: (text: string) => invoke<string>("explain_selection", { text }),
+
+  /// Synthesizes a paper's highlights into a summary via the active provider.
+  summarizeHighlights: (paperId: string) =>
+    invoke<string>("summarize_highlights", { paperId }),
+
   /// Reads a previously saved translation without a network call, so the viewer
   /// can restore it automatically when a page reopens.
   getCachedTranslation: (paperId: string, pageNumber: number, targetLanguage?: string) =>

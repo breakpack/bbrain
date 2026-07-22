@@ -1,8 +1,10 @@
-import { Trash2 } from "lucide-react";
+import { useMutation } from "@tanstack/react-query";
+import { Sparkles, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/Button";
 import { CardDescription } from "@/components/ui/Card";
 import { cn } from "@/lib/cn";
+import { api, errorMessage } from "@/lib/ipc";
 import { HIGHLIGHT_COLORS, type HighlightColor } from "@/lib/types";
 import { useDeleteHighlight, useHighlights, useUpdateHighlight } from "./queries";
 
@@ -24,6 +26,7 @@ export function HighlightsTab({
   const highlights = useHighlights(paperId);
   const updateHighlight = useUpdateHighlight(paperId);
   const deleteHighlight = useDeleteHighlight(paperId);
+  const summarize = useMutation({ mutationFn: () => api.summarizeHighlights(paperId) });
 
   if (highlights.isPending) {
     return (
@@ -56,8 +59,31 @@ export function HighlightsTab({
   });
 
   return (
-    <ul className="flex flex-col">
-      {rows.map((highlight) => (
+    <div className="flex flex-col">
+      <div className="flex flex-col gap-sm border-b border-line p-md">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => summarize.mutate()}
+          loading={summarize.isPending}
+        >
+          <Sparkles aria-hidden className="h-4 w-4" />
+          하이라이트 AI 종합
+        </Button>
+        {summarize.isError && (
+          <p role="alert" className="text-caption text-danger">
+            {errorMessage(summarize.error)}
+          </p>
+        )}
+        {summarize.data && (
+          <div className="rounded-sm bg-canvas-soft p-md text-caption leading-relaxed text-ink">
+            {summarize.data}
+          </div>
+        )}
+      </div>
+
+      <ul className="flex flex-col">
+        {rows.map((highlight) => (
         <li key={highlight.id} className="border-b border-line p-md">
           <button
             onClick={() => onJump(highlight.pageNumber)}
@@ -100,7 +126,8 @@ export function HighlightsTab({
             </Button>
           </div>
         </li>
-      ))}
-    </ul>
+        ))}
+      </ul>
+    </div>
   );
 }
