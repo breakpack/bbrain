@@ -527,18 +527,71 @@ export function mergeRects(rects: NormalizedRect[]): NormalizedRect[] {
   return merged;
 }
 
+/** A rectangle in client (viewport) coordinates, as `getClientRects` yields. */
+export type ClientBox = { top: number; bottom: number; left: number; right: number };
+
+/**
+ * How far apart, as a multiple of the line box height, two rects on the same
+ * visual line may sit and still be joined into one bar. Inter-word and
+ * inter-span spacing (even the stretched spaces of justified text) stays well
+ * under one line height; a column gutter is several line heights wide. So this
+ * merges the words of a line while a gutter — or a wide indent — starts a new
+ * bar instead of one bar spanning the whitespace between columns.
+ */
+const BAR_MERGE_GAP_RATIO = 1.2;
+
+/**
+ * Groups tight per-glyph client rectangles into one bar per *contiguous run* of
+ * text on a visual line. Rects that overlap vertically are on the same line;
+ * within a line they join only across a small horizontal gap. A large gap — the
+ * whitespace of a column gutter, reached because the DOM range spans spans on
+ * both sides of it — starts a NEW bar rather than a single bar bridging the
+ * gutter into the margin. Splitting is always safe; over-merging is what bleeds
+ * past the text (§9.5).
+ */
+export function mergeClientBoxesIntoBars(boxes: ClientBox[]): ClientBox[] {
+  // Left-to-right within each line so a run grows rightward and a gutter gap is
+  // seen as the jump from a settled bar's right edge to the next rect's left.
+  const sorted = [...boxes].sort((a, b) => a.top - b.top || a.left - b.left);
+  const bars: ClientBox[] = [];
+
+  for (const box of sorted) {
+    const height = box.bottom - box.top;
+    const bar = bars.find((candidate) => {
+      const vOverlap =
+        Math.min(candidate.bottom, box.bottom) - Math.max(candidate.top, box.top);
+      const sameLine = vOverlap > Math.min(candidate.bottom - candidate.top, height) * 0.5;
+      if (!sameLine) return false;
+      // Gap between the two boxes on the axis; negative when they overlap.
+      const gap = Math.max(box.left - candidate.right, candidate.left - box.right);
+      return gap <= height * BAR_MERGE_GAP_RATIO;
+    });
+
+    if (bar) {
+      bar.left = Math.min(bar.left, box.left);
+      bar.right = Math.max(bar.right, box.right);
+      bar.top = Math.min(bar.top, box.top);
+      bar.bottom = Math.max(bar.bottom, box.bottom);
+    } else {
+      bars.push({ ...box });
+    }
+  }
+
+  return bars;
+}
+
 /**
  * Converts a DOM selection over the text layer into page-space rectangles that
  * hug the text. The selection's own line boxes span the full text-layer width and
  * bleed into the margin, so instead we measure each selected text node's own
  * sub-range — those rectangles are tight to the glyphs — and merge them into one
- * continuous bar per line (§9.5).
+ * continuous bar per contiguous run of text (§9.5).
  */
 export function selectionToRects(range: Range, layer: HTMLElement): NormalizedRect[] {
   const box = layer.getBoundingClientRect();
   if (box.width === 0 || box.height === 0) return [];
 
-  const collected: DOMRect[] = [];
+  const collected: ClientBox[] = [];
   const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     if (!range.intersectsNode(node)) continue;
@@ -562,35 +615,16 @@ export function selectionToRects(range: Range, layer: HTMLElement): NormalizedRe
     }
   }
 
-  // Merge the tight per-node rectangles into one bar per visual line.
-  type Line = { top: number; bottom: number; left: number; right: number };
-  const lines: Line[] = [];
-  for (const rect of collected) {
-    const line = lines.find(
-      (candidate) =>
-        Math.min(candidate.bottom, rect.bottom) - Math.max(candidate.top, rect.top) >
-        Math.min(candidate.bottom - candidate.top, rect.height) * 0.5,
-    );
-    if (line) {
-      line.left = Math.min(line.left, rect.left);
-      line.right = Math.max(line.right, rect.right);
-      line.top = Math.min(line.top, rect.top);
-      line.bottom = Math.max(line.bottom, rect.bottom);
-    } else {
-      lines.push({ top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right });
-    }
-  }
-
   const rects: NormalizedRect[] = [];
-  for (const line of lines) {
-    const x = (line.left - box.left) / box.width;
-    const y = (line.top - box.top) / box.height;
+  for (const bar of mergeClientBoxesIntoBars(collected)) {
+    const x = (bar.left - box.left) / box.width;
+    const y = (bar.top - box.top) / box.height;
     if (x < -0.01 || y < -0.01) continue;
     rects.push({
       x,
       y,
-      width: (line.right - line.left) / box.width,
-      height: (line.bottom - line.top) / box.height,
+      width: (bar.right - bar.left) / box.width,
+      height: (bar.bottom - bar.top) / box.height,
     });
   }
 

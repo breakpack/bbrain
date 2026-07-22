@@ -10,10 +10,12 @@ import {
   findRepeatedLines,
   groupIntoParagraphs,
   loadDocument,
+  mergeClientBoxesIntoBars,
   mergeRects,
   splitAroundWord,
   splitSentenceRanges,
   subtractRect,
+  type ClientBox,
   type ExtractedItem,
 } from "./pdf";
 
@@ -171,6 +173,68 @@ describe("rectangle merging", () => {
     ]);
 
     expect(merged).toHaveLength(2);
+  });
+});
+
+describe("selection bar merging", () => {
+  // A tight glyph box on a line of height 10 (client-space). `left`/`right` are
+  // the horizontal extent; the row sits at top=0..10 unless noted.
+  const box = (left: number, right: number, top = 0): ClientBox => ({
+    left,
+    right,
+    top,
+    bottom: top + 10,
+  });
+
+  it("joins the words of one line into a single bar", () => {
+    // Three word boxes with normal inter-word gaps (~4px, well under a line).
+    const bars = mergeClientBoxesIntoBars([box(0, 30), box(34, 60), box(64, 90)]);
+
+    expect(bars).toHaveLength(1);
+    expect(bars[0].left).toBe(0);
+    expect(bars[0].right).toBe(90);
+  });
+
+  it("does NOT bridge a column gutter into one bar", () => {
+    // Left column ends at x=250, right column starts at x=320 — a 70px gutter,
+    // several line heights wide. The DOM range picked up spans on both sides
+    // (pdf.js emits spans in content order), and the old merge fused them into a
+    // single bar spanning the gutter and the margin. Each column must stay its
+    // own bar.
+    const bars = mergeClientBoxesIntoBars([
+      box(40, 250), // left column line
+      box(320, 540), // right column line, same vertical band
+    ]);
+
+    expect(bars).toHaveLength(2);
+    expect(bars[0].right).toBe(250);
+    expect(bars[1].left).toBe(320);
+    // No bar spans the gutter.
+    expect(bars.some((bar) => bar.left < 320 && bar.right > 250)).toBe(false);
+  });
+
+  it("keeps a stretched justified space within one bar", () => {
+    // Justified text stretches spaces; even a wide space (~11px < 1.2 lines) is
+    // still part of the same run and must not split the bar.
+    const bars = mergeClientBoxesIntoBars([box(40, 120), box(131, 250)]);
+
+    expect(bars).toHaveLength(1);
+    expect(bars[0].left).toBe(40);
+    expect(bars[0].right).toBe(250);
+  });
+
+  it("keeps separate visual lines as separate bars", () => {
+    const bars = mergeClientBoxesIntoBars([box(40, 250, 0), box(40, 250, 20)]);
+
+    expect(bars).toHaveLength(2);
+  });
+
+  it("merges overlapping glyph boxes on a line", () => {
+    const bars = mergeClientBoxesIntoBars([box(40, 120), box(100, 200)]);
+
+    expect(bars).toHaveLength(1);
+    expect(bars[0].left).toBe(40);
+    expect(bars[0].right).toBe(200);
   });
 });
 
