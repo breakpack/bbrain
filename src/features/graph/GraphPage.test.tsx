@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { invokeMock, mockCommands } from "@/test/tauri";
 import { renderWithQuery } from "@/test/render";
-import type { Graph, TopicGraph } from "@/lib/types";
+import type { Graph, PaperNeighborhood, TopicGraph } from "@/lib/types";
 import { GraphPage } from "./GraphPage";
 
 /**
@@ -71,6 +71,27 @@ const PAPER_GRAPH: Graph = {
   ],
   edges: [
     { sourcePaperId: "p1", targetPaperId: "p2", relationType: "semantic", score: 0.8 },
+  ],
+};
+
+const NEIGHBORHOOD: PaperNeighborhood = {
+  centerId: "p1",
+  nodes: [
+    {
+      id: "p1",
+      title: "Attention Is All You Need",
+      year: 2017,
+      similarity: null,
+      lineage: "focus",
+      citesFocus: false,
+    },
+    { id: "p2", title: "BERT", year: 2018, similarity: 0.88, lineage: "derivative", citesFocus: false },
+    { id: "p0", title: "Seq2Seq", year: 2014, similarity: 0.79, lineage: "precedent", citesFocus: true },
+  ],
+  edges: [
+    { source: "p1", target: "p2", edgeType: "similarity", weight: 0.88 },
+    { source: "p1", target: "p0", edgeType: "similarity", weight: 0.79 },
+    { source: "p1", target: "p0", edgeType: "citation", weight: 1 },
   ],
 };
 
@@ -254,5 +275,81 @@ describe("graph page — paper view", () => {
     fire("select", "node", "p2");
     await userEvent.click(await screen.findByRole("button", { name: "논문 열기" }));
     expect(opened).toEqual(["p1", "p2"]);
+  });
+});
+
+describe("graph page — paper neighborhood (ConnectedPapers)", () => {
+  async function enterNeighborhood(onOpenPaper: (id: string) => void = noop) {
+    renderWithQuery(<GraphPage onOpenPaper={onOpenPaper} />);
+    await userEvent.click(screen.getByRole("button", { name: "논문" }));
+    await waitFor(() => expect(cyHarness.instances).toBeGreaterThan(0));
+    fire("select", "node", "p1");
+    await userEvent.click(await screen.findByRole("button", { name: "이웃 보기" }));
+  }
+
+  it("opens a focus graph and lets a neighbour be opened or re-centred", async () => {
+    const opened: string[] = [];
+    const focusRequests: string[] = [];
+    mockCommands({
+      get_topic_graph: () => TOPIC_GRAPH,
+      get_graph: () => PAPER_GRAPH,
+      list_groups: () => [],
+      get_paper_neighborhood: (args: { paperId: string }) => {
+        focusRequests.push(args.paperId);
+        return NEIGHBORHOOD;
+      },
+    });
+
+    await enterNeighborhood((id) => opened.push(id));
+
+    // The centre paper names the view; the year-axis hint orients the reader.
+    expect(await screen.findByRole("heading", { name: "Attention Is All You Need" })).toBeInTheDocument();
+    expect(focusRequests).toEqual(["p1"]);
+
+    // Selecting a neighbour surfaces its lineage and similarity.
+    await waitFor(() => expect(cyHarness.handlers.length).toBeGreaterThan(0));
+    fire("select", "node", "p0");
+    expect(await screen.findByText("선행 연구")).toBeInTheDocument();
+    expect(screen.getByText("유사도 79%")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "논문 열기" }));
+    expect(opened).toEqual(["p0"]);
+
+    // Re-centring refetches the neighbourhood for the chosen neighbour.
+    fire("select", "node", "p0");
+    await userEvent.click(screen.getByRole("button", { name: "중심으로" }));
+    await waitFor(() => expect(focusRequests).toContain("p0"));
+  });
+
+  it("explains the empty state when the focus paper has no neighbours yet", async () => {
+    mockCommands({
+      get_topic_graph: () => TOPIC_GRAPH,
+      get_graph: () => PAPER_GRAPH,
+      list_groups: () => [],
+      get_paper_neighborhood: () => ({
+        centerId: "p1",
+        nodes: [NEIGHBORHOOD.nodes[0]],
+        edges: [],
+      }),
+    });
+
+    await enterNeighborhood();
+
+    expect(await screen.findByText("아직 이어질 이웃이 없어요")).toBeInTheDocument();
+  });
+
+  it("returns to the graph from the back control", async () => {
+    mockCommands({
+      get_topic_graph: () => TOPIC_GRAPH,
+      get_graph: () => PAPER_GRAPH,
+      list_groups: () => [],
+      get_paper_neighborhood: () => NEIGHBORHOOD,
+    });
+
+    await enterNeighborhood();
+    await userEvent.click(await screen.findByRole("button", { name: "그래프로" }));
+
+    // Back on the paper view, its toggle is available again.
+    expect(await screen.findByRole("button", { name: "인용" })).toBeInTheDocument();
   });
 });

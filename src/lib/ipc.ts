@@ -7,6 +7,7 @@ import type {
   ChatScope,
   ChatSession,
   Graph,
+  PaperNeighborhood,
   TopicGraph,
   Group,
   Highlight,
@@ -200,6 +201,11 @@ export const api = {
   // --- graph and obsidian ---------------------------------------------------
 
   getGraph: () => invoke<Graph>("get_graph"),
+
+  /// The ConnectedPapers-style focus graph for one paper: its nearest neighbours
+  /// by embedding similarity, the edges among them, and each paper's year.
+  getPaperNeighborhood: (paperId: string) =>
+    invoke<PaperNeighborhood>("get_paper_neighborhood", { paperId }),
 
   /// The topic graph. Pass rebuild=true to force a fresh rebuild from the AI
   /// analyses; otherwise it rebuilds only when the analyses have changed.
