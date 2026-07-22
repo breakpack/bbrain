@@ -22,6 +22,11 @@ const LANGUAGES = [
   { value: "en", label: "English" },
 ];
 
+const TRANSLATION_ENGINES = [
+  { value: "google", label: "무료 (Google 번역)" },
+  { value: "llm", label: "선택된 AI" },
+];
+
 export function SettingsPage({ settings }: { settings: Settings }) {
   const updateSettings = useUpdateSettings();
   const configured = PROVIDERS.filter((provider) => hasKey(settings, provider));
@@ -101,7 +106,27 @@ export function SettingsPage({ settings }: { settings: Settings }) {
             options={LANGUAGES}
             onChange={(value) => updateSettings.mutate({ translationLanguage: value })}
           />
+          <Select
+            label="번역 엔진"
+            value={settings.translationEngine}
+            options={TRANSLATION_ENGINES}
+            onChange={(value) =>
+              updateSettings.mutate({ translationEngine: value as "google" | "llm" })
+            }
+            hint={
+              settings.translationEngine === "llm"
+                ? "현재 선택된 AI 공급자가 페이지를 번역합니다."
+                : "무료 Google 엔진으로 번역합니다. 키가 필요 없습니다."
+            }
+          />
         </div>
+
+        {settings.translationEngine === "llm" && !active && (
+          <p role="alert" className="flex items-start gap-2 text-caption text-danger">
+            <Info aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
+            선택된 AI로 번역하려면 위에서 공급자를 먼저 연결하세요.
+          </p>
+        )}
       </Card>
 
       <Card className="flex flex-col gap-lg">

@@ -3,30 +3,38 @@
  * src-tauri/src — change both sides together.
  */
 
-export type Provider = "openai" | "anthropic";
+export type Provider = "openai" | "anthropic" | "deepseek";
 
-export const PROVIDERS: readonly Provider[] = ["openai", "anthropic"] as const;
+export const PROVIDERS: readonly Provider[] = ["openai", "anthropic", "deepseek"] as const;
 
 export const PROVIDER_LABEL: Record<Provider, string> = {
   openai: "OpenAI",
   anthropic: "Anthropic",
+  deepseek: "DeepSeek",
 };
 
 /** Balanced starting presets (DEVELOPMENT.md §5.1) — initial values, not constants. */
 export const DEFAULT_MODEL: Record<Provider, string> = {
   openai: "gpt-5.6-terra",
   anthropic: "claude-sonnet-5",
+  deepseek: "deepseek-chat",
 };
+
+/** How the reader's page/selection translation runs. */
+export type TranslationEngine = "google" | "llm";
 
 export type Settings = {
   language: string;
   activeProvider: Provider | null;
   openaiModel: string | null;
   anthropicModel: string | null;
+  deepseekModel: string | null;
   /** The key itself never crosses the IPC boundary — only whether one exists. */
   hasOpenaiKey: boolean;
   hasAnthropicKey: boolean;
+  hasDeepseekKey: boolean;
   translationLanguage: string;
+  translationEngine: TranslationEngine;
   obsidianVaultPath: string | null;
   embeddingModelId: string;
   embeddingDimension: number;
@@ -40,7 +48,9 @@ export type SettingsPatch = Partial<{
   activeProvider: Provider;
   openaiModel: string;
   anthropicModel: string;
+  deepseekModel: string;
   translationLanguage: string;
+  translationEngine: TranslationEngine;
   obsidianVaultPath: string;
   networkNoticeAccepted: boolean;
   onboardingCompleted: boolean;
@@ -458,9 +468,35 @@ export type CommandError = {
 };
 
 export function hasKey(settings: Settings, provider: Provider): boolean {
-  return provider === "openai" ? settings.hasOpenaiKey : settings.hasAnthropicKey;
+  switch (provider) {
+    case "openai":
+      return settings.hasOpenaiKey;
+    case "anthropic":
+      return settings.hasAnthropicKey;
+    case "deepseek":
+      return settings.hasDeepseekKey;
+  }
 }
 
 export function modelFor(settings: Settings, provider: Provider): string | null {
-  return provider === "openai" ? settings.openaiModel : settings.anthropicModel;
+  switch (provider) {
+    case "openai":
+      return settings.openaiModel;
+    case "anthropic":
+      return settings.anthropicModel;
+    case "deepseek":
+      return settings.deepseekModel;
+  }
+}
+
+/** The settings patch key that stores `provider`'s selected model. */
+export function modelPatchFor(provider: Provider, model: string): SettingsPatch {
+  switch (provider) {
+    case "openai":
+      return { openaiModel: model };
+    case "anthropic":
+      return { anthropicModel: model };
+    case "deepseek":
+      return { deepseekModel: model };
+  }
 }

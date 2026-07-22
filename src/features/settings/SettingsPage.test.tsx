@@ -97,9 +97,10 @@ describe("settings", () => {
     renderWithQuery(<SettingsPage settings={CONNECTED} />);
     await screen.findByRole("button", { name: /키 삭제/ });
 
-    // Only the unconnected provider (OpenAI) asks for a key.
+    // Only the unconnected providers (OpenAI, DeepSeek) ask for a key; the
+    // connected Anthropic provider shows a model selector instead.
     const keyFields = screen.getAllByLabelText("API 키");
-    expect(keyFields).toHaveLength(1);
+    expect(keyFields).toHaveLength(2);
     expect(keyFields[0]).toHaveAttribute("placeholder", "sk-...");
   });
 });
