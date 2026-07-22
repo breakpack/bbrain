@@ -11,6 +11,7 @@ import {
   PROVIDER_LABEL,
   hasKey,
   modelFor,
+  modelPatchFor,
   type Provider,
   type Settings,
 } from "@/lib/types";
@@ -66,9 +67,7 @@ export function ProviderSection({
   async function selectModel(model: string) {
     setError(null);
     try {
-      await updateSettings.mutateAsync(
-        provider === "openai" ? { openaiModel: model } : { anthropicModel: model },
-      );
+      await updateSettings.mutateAsync(modelPatchFor(provider, model));
     } catch (cause) {
       setError(errorMessage(cause));
     }
@@ -106,7 +105,7 @@ export function ProviderSection({
             label="API 키"
             autoComplete="off"
             spellCheck={false}
-            placeholder={provider === "openai" ? "sk-..." : "sk-ant-..."}
+            placeholder={provider === "anthropic" ? "sk-ant-..." : "sk-..."}
             value={apiKey}
             onChange={(event) => setApiKey(event.target.value)}
             hint={`${label} 키는 이 기기의 시스템 키체인에만 저장됩니다.`}

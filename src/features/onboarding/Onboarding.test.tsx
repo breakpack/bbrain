@@ -38,7 +38,8 @@ describe("first-run onboarding", () => {
     await userEvent.click(await screen.findByRole("button", { name: /이해했습니다/ }));
 
     expect(await screen.findByText("AI 공급자를 연결하세요")).toBeInTheDocument();
-    expect(screen.getAllByLabelText("API 키")).toHaveLength(2);
+    // OpenAI · Anthropic · DeepSeek — one key field each.
+    expect(screen.getAllByLabelText("API 키")).toHaveLength(3);
   });
 
   it("lets the user skip AI setup and still enter the app", async () => {

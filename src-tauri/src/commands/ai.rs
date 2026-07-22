@@ -89,6 +89,7 @@ pub async fn translate_page(
 /// "이 부분만 번역" action in the selection toolbar. Ad-hoc and uncached.
 #[tauri::command]
 pub async fn translate_selection(
+    app: AppHandle,
     state: State<'_, AppState>,
     text: String,
     target_language: Option<String>,
@@ -101,7 +102,7 @@ pub async fn translate_selection(
         }
     };
 
-    Ok(translation::translate_selection(&text, &language).await?)
+    Ok(translation::translate_selection(&app, &text, &language).await?)
 }
 
 /// Returns a saved translation for a page, or `None` if it was never translated.
