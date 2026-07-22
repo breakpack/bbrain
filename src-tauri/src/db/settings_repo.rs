@@ -221,6 +221,8 @@ mod tests {
         assert_eq!(settings.index_generation, 1);
         assert!(settings.active_provider.is_none());
         assert!(!settings.has_openai_key);
+        assert!(!settings.has_deepseek_key);
+        assert_eq!(settings.translation_engine, "google");
         assert!(settings.onboarding_completed_at.is_none());
     }
 

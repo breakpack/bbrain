@@ -6,7 +6,7 @@ import { Card, CardDescription, CardTitle, Eyebrow } from "@/components/ui/Card"
 import { ProviderSection } from "@/features/settings/ProviderSection";
 import { useUpdateSettings } from "@/features/settings/queries";
 import { errorMessage } from "@/lib/ipc";
-import { PROVIDERS, type Settings } from "@/lib/types";
+import { PROVIDERS, hasKey, type Settings } from "@/lib/types";
 
 type Step = "notice" | "provider";
 
@@ -22,7 +22,7 @@ export function Onboarding({ settings }: { settings: Settings }) {
   const [error, setError] = useState<string | null>(null);
   const updateSettings = useUpdateSettings();
 
-  const anyKey = settings.hasOpenaiKey || settings.hasAnthropicKey;
+  const anyKey = PROVIDERS.some((provider) => hasKey(settings, provider));
 
   async function acceptNotice() {
     setError(null);
@@ -73,7 +73,7 @@ export function Onboarding({ settings }: { settings: Settings }) {
                   <ShieldCheck aria-hidden className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
                   <p className="text-caption text-ink">
                     요약·번역·채팅을 요청하면 해당 작업에 필요한 논문 텍스트와 대화 맥락만
-                    선택한 공급자(OpenAI 또는 Anthropic)로 전송됩니다. API 키는 시스템
+                    선택한 공급자(OpenAI, Anthropic 또는 DeepSeek)로 전송됩니다. API 키는 시스템
                     키체인에 저장하며 로그에 남기지 않습니다.
                   </p>
                 </li>
