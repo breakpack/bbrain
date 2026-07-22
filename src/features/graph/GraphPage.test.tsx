@@ -135,6 +135,58 @@ describe("graph page — topic view (default)", () => {
     await waitFor(() => expect(rebuildCalls).toContain(true));
   });
 
+  it("shows a calm loading line while the graph is being prepared", () => {
+    mockCommands({ get_topic_graph: () => new Promise<never>(() => {}) });
+
+    renderWithQuery(<GraphPage onOpenPaper={noop} />);
+
+    expect(screen.getByText("그래프를 준비하는 중이에요")).toBeInTheDocument();
+  });
+
+  it("surfaces a load failure with a retry that refetches", async () => {
+    let attempt = 0;
+    mockCommands({
+      get_topic_graph: () => {
+        attempt += 1;
+        if (attempt === 1) throw { code: "internal", message: "임베딩 모델을 불러오지 못했습니다." };
+        return TOPIC_GRAPH;
+      },
+    });
+
+    renderWithQuery(<GraphPage onOpenPaper={noop} />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("임베딩 모델을 불러오지 못했습니다.");
+
+    await userEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+
+    // After a successful retry the graph mounts and the error clears.
+    await waitFor(() => expect(cyHarness.instances).toBeGreaterThan(0));
+    expect(screen.queryByRole("button", { name: "다시 시도" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the graph and shows an inline alert when a rebuild fails", async () => {
+    let calls = 0;
+    mockCommands({
+      get_topic_graph: (args: { rebuild: boolean }) => {
+        calls += 1;
+        if (args.rebuild) throw { code: "internal", message: "재구성에 실패했습니다." };
+        return TOPIC_GRAPH;
+      },
+    });
+
+    renderWithQuery(<GraphPage onOpenPaper={noop} />);
+
+    await waitFor(() => expect(cyHarness.instances).toBeGreaterThan(0));
+    await userEvent.click(screen.getByRole("button", { name: "재구성" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("재구성에 실패했습니다.");
+    // The graph itself stays mounted — a failed rebuild does not wipe the canvas.
+    expect(screen.queryByRole("button", { name: "다시 시도" })).not.toBeInTheDocument();
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
   it("toggles an edge-type filter via its aria-pressed state", async () => {
     mockCommands({ get_topic_graph: () => TOPIC_GRAPH });
 

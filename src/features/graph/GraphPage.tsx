@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle, Eyebrow } from "@/components/ui/Card";
 import { useGroups } from "@/features/library/queries";
 import { cn } from "@/lib/cn";
-import { api } from "@/lib/ipc";
+import { api, errorMessage } from "@/lib/ipc";
 import type { GraphNode, RelationType, TopicEdgeType, TopicNode } from "@/lib/types";
 
 type Mode = "topic" | "paper";
@@ -58,6 +58,25 @@ export function GraphPage({ onOpenPaper }: { onOpenPaper: (paperId: string) => v
 
 const reducedMotionQuery = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/**
+ * Focus a selection: fade everything, then restore the selected node, its direct
+ * neighbours, and the edges between them. Green marks the selection, the rest
+ * recedes (DESIGN.md §12.2). Guarded so the jsdom cytoscape stub — whose event
+ * targets only expose `id()` — is a no-op instead of a crash.
+ */
+function focusNeighborhood(cy: Core, node: { closedNeighborhood?: () => { removeClass: (c: string) => void } }) {
+  if (typeof cy.elements !== "function" || typeof node.closedNeighborhood !== "function") return;
+  cy.elements().addClass("faded");
+  // closedNeighborhood = the node itself plus its adjacent nodes and the edges
+  // connecting them.
+  node.closedNeighborhood().removeClass("faded");
+}
+
+function clearFocus(cy: Core) {
+  if (typeof cy.elements !== "function") return;
+  cy.elements().removeClass("faded");
+}
 
 // --- topic graph -------------------------------------------------------------
 
@@ -160,6 +179,9 @@ function TopicGraphView({
           style: { "line-color": "#c2c2c2", "line-style": "dashed", opacity: 0.45 },
         },
         { selector: "edge:selected", style: { "line-color": "#00c473", opacity: 1 } },
+        // Everything outside the current selection recedes (DESIGN.md §12.2).
+        { selector: "node.faded", style: { opacity: 0.15 } },
+        { selector: "edge.faded", style: { opacity: 0.08 } },
       ],
       layout: {
         name: "cose",
@@ -174,8 +196,12 @@ function TopicGraphView({
     cy.on("select", "node", (event) => {
       const id = event.target.id();
       setSelected(graph.data?.nodes.find((node) => node.id === id) ?? null);
+      focusNeighborhood(cy, event.target);
     });
-    cy.on("unselect", "node", () => setSelected(null));
+    cy.on("unselect", "node", () => {
+      setSelected(null);
+      clearFocus(cy);
+    });
 
     cyRef.current = cy;
     return () => {
@@ -211,9 +237,24 @@ function TopicGraphView({
             }
           : undefined
       }
-      loading={graph.isPending || rebuild.isPending}
+      error={
+        graph.isError
+          ? {
+              description: `${errorMessage(graph.error)} 잠시 후 다시 시도해 주세요.`,
+              onRetry: () => graph.refetch(),
+              retrying: graph.isFetching,
+            }
+          : undefined
+      }
+      loading={graph.isPending}
       sidebar={
         <>
+          {rebuild.isError && (
+            <p role="alert" className="text-caption text-danger">
+              {errorMessage(rebuild.error)} 개념 지도를 다시 만들지 못했습니다. 아래 재구성을 다시
+              눌러 주세요.
+            </p>
+          )}
           <section className="flex flex-col gap-sm">
             <h2 className="text-caption font-medium text-ink-body">연결 유형</h2>
             <div className="flex flex-wrap gap-1.5">
@@ -234,6 +275,9 @@ function TopicGraphView({
                 );
               })}
             </div>
+            <p className="text-caption text-ink-subhead">
+              원의 크기는 그 개념을 다룬 논문 수예요. 개념을 누르면 이어진 개념만 밝게 남습니다.
+            </p>
           </section>
 
           {selected && (
@@ -347,6 +391,9 @@ function PaperGraphView({
           style: { "line-color": "#333333", opacity: 0.9, width: 2 },
         },
         { selector: "edge:selected", style: { "line-color": "#00c473", opacity: 1 } },
+        // Everything outside the current selection recedes (DESIGN.md §12.2).
+        { selector: "node.faded", style: { opacity: 0.15 } },
+        { selector: "edge.faded", style: { opacity: 0.08 } },
       ],
       layout: {
         name: "cose",
@@ -361,8 +408,12 @@ function PaperGraphView({
     cy.on("select", "node", (event) => {
       const id = event.target.id();
       setSelected(graph.data?.nodes.find((candidate) => candidate.id === id) ?? null);
+      focusNeighborhood(cy, event.target);
     });
-    cy.on("unselect", "node", () => setSelected(null));
+    cy.on("unselect", "node", () => {
+      setSelected(null);
+      clearFocus(cy);
+    });
     cy.on("dbltap", "node", (event) => onOpenPaper(event.target.id()));
 
     cyRef.current = cy;
@@ -380,6 +431,15 @@ function PaperGraphView({
       containerRef={containerRef}
       onFit={() => cyRef.current?.fit(undefined, 40)}
       loading={graph.isPending}
+      error={
+        graph.isError
+          ? {
+              description: `${errorMessage(graph.error)} 잠시 후 다시 시도해 주세요.`,
+              onRetry: () => graph.refetch(),
+              retrying: graph.isFetching,
+            }
+          : undefined
+      }
       empty={
         empty
           ? {
@@ -455,6 +515,7 @@ function GraphLayout({
   sidebar,
   extraToolbar,
   empty,
+  error,
   loading,
 }: {
   toggle: React.ReactNode;
@@ -463,26 +524,49 @@ function GraphLayout({
   sidebar: React.ReactNode;
   extraToolbar?: React.ReactNode;
   empty?: { title: string; description: string };
+  error?: { description: string; onRetry: () => void; retrying?: boolean };
   loading?: boolean;
 }) {
+  // One overlay at a time; an error takes precedence over an in-flight load.
   return (
     <div className="flex min-h-0 flex-1">
       <div className="relative min-w-0 flex-1">
-        {/* The canvas always mounts so its ref is available; the empty state
-            overlays it. */}
+        {/* The canvas always mounts so its ref is available; the state overlays
+            sit on top of it. */}
         <div ref={containerRef} className="h-full w-full bg-canvas-soft" />
 
-        {empty && (
+        {error ? (
+          <div
+            role="alert"
+            className="absolute inset-0 flex flex-col items-center justify-center gap-md p-section text-center"
+          >
+            <Eyebrow>관계 그래프</Eyebrow>
+            <CardTitle>그래프를 불러오지 못했습니다</CardTitle>
+            <CardDescription>{error.description}</CardDescription>
+            <Button size="sm" onClick={error.onRetry} loading={error.retrying}>
+              다시 시도
+            </Button>
+          </div>
+        ) : empty ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-md p-section text-center">
             <Eyebrow>관계 그래프</Eyebrow>
             <CardTitle>{empty.title}</CardTitle>
             <CardDescription>{empty.description}</CardDescription>
           </div>
-        )}
+        ) : loading ? (
+          <div
+            aria-live="polite"
+            className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-sm p-section text-center"
+          >
+            <p className="animate-pulse text-body text-ink-body motion-reduce:animate-none">
+              그래프를 준비하는 중이에요
+            </p>
+          </div>
+        ) : null}
 
         <div className="absolute left-md top-md flex items-center gap-sm">
           {toggle}
-          <Button variant="outline" size="sm" onClick={onFit} disabled={loading}>
+          <Button variant="outline" size="sm" onClick={onFit} disabled={loading || !!error}>
             <Maximize2 aria-hidden className="h-4 w-4" />
             전체 보기
           </Button>
