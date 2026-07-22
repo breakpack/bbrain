@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod chat;
 pub mod commands;
 pub mod db;
+pub mod discover;
 pub mod error;
 pub mod ids;
 pub mod import;
@@ -87,6 +88,8 @@ pub fn run() {
             commands::provider::list_provider_models,
             commands::provider::remove_provider,
             commands::library::import_papers,
+            discover::search_papers,
+            discover::import_discovered_paper,
             commands::library::list_papers,
             commands::library::get_paper,
             commands::library::update_paper,
