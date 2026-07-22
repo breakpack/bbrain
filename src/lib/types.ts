@@ -390,6 +390,36 @@ export type TopicGraph = {
   edges: TopicEdge[];
 };
 
+// --- paper neighborhood (ConnectedPapers-style focus graph) ------------------
+
+/** Where a neighbour sits relative to the focus paper in time. */
+export type Lineage = "focus" | "precedent" | "derivative" | "concurrent";
+
+export type NeighborEdgeType = "similarity" | "citation";
+
+export type NeighborNode = {
+  id: string;
+  title: string;
+  year: number | null;
+  /** Cosine similarity to the focus paper; null for the focus and citation-only. */
+  similarity: number | null;
+  lineage: Lineage;
+  citesFocus: boolean;
+};
+
+export type NeighborEdge = {
+  source: string;
+  target: string;
+  edgeType: NeighborEdgeType;
+  weight: number;
+};
+
+export type PaperNeighborhood = {
+  centerId: string;
+  nodes: NeighborNode[];
+  edges: NeighborEdge[];
+};
+
 export type SyncRecord = {
   paperId: string;
   paperTitle: string;
