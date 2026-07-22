@@ -3,6 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CommandError,
   ConfigureProviderInput,
+  DiscoverQuery,
+  DiscoverResults,
+  DiscoveredPaper,
   ExtractedPage,
   ChatScope,
   ChatSession,
@@ -172,6 +175,23 @@ export const api = {
       pageNumber,
       targetLanguage,
     }),
+
+  // --- discover (external paper search) -------------------------------------
+
+  /// Searches trustworthy scholarly sources (Semantic Scholar) for papers on a
+  /// topic. All network access and any source credentials live in the Rust core;
+  /// the frontend only renders results and never sees a key. Backend command:
+  /// `search_papers` (see docs/discover-ipc-spec.md).
+  searchPapers: (query: DiscoverQuery) =>
+    invoke<DiscoverResults>("search_papers", { query }),
+
+  /// Imports a discovered paper into the library: the core downloads its
+  /// open-access PDF, dedupes by content hash, and runs the normal import
+  /// pipeline, returning the same ImportOutcome shape as a local import. Rejects
+  /// when the paper has no downloadable PDF. Backend command:
+  /// `import_discovered_paper`.
+  importDiscoveredPaper: (paper: DiscoveredPaper, targetGroupId?: string) =>
+    invoke<ImportOutcome>("import_discovered_paper", { paper, targetGroupId }),
 
   // --- chat and search ------------------------------------------------------
 

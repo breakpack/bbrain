@@ -1,8 +1,10 @@
-node_modules/
-dist/
-src-tauri/target/
-src-tauri/gen/
 .DS_Store
 *.log
+# node_modules is a symlink in worktrees; the trailing-slash rule above misses it
+dist/
 graphify-out/
+node_modules
+node_modules/
+src-tauri/gen/
+src-tauri/target/
 TASK.md

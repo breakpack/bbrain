@@ -1,9 +1,10 @@
-import { AlertCircle, Library, Network, Settings as SettingsIcon } from "lucide-react";
+import { AlertCircle, Library, Network, Settings as SettingsIcon, Telescope } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { Chat } from "@/features/chat/Chat";
+import { DiscoverPage } from "@/features/discover/DiscoverPage";
 import { GraphPage } from "@/features/graph/GraphPage";
 import { startExtractionWorker } from "@/features/jobs/extractionWorker";
 import { LibraryPage } from "@/features/library/LibraryPage";
@@ -17,6 +18,7 @@ import { errorMessage } from "@/lib/ipc";
 
 type Route =
   | { name: "library" }
+  | { name: "discover" }
   | { name: "graph" }
   | { name: "settings" }
   | { name: "viewer"; paperId: string };
@@ -84,6 +86,12 @@ export function App() {
           onClick={() => setRoute({ name: "library" })}
         />
         <NavItem
+          icon={<Telescope aria-hidden className="h-[18px] w-[18px]" />}
+          label="논문 찾기"
+          active={route.name === "discover"}
+          onClick={() => setRoute({ name: "discover" })}
+        />
+        <NavItem
           icon={<Network aria-hidden className="h-[18px] w-[18px]" />}
           label="관계 그래프"
           active={route.name === "graph"}
@@ -100,6 +108,11 @@ export function App() {
       <main className="min-w-0 flex-1 overflow-hidden">
         {route.name === "library" && (
           <LibraryPage
+            onOpenPaper={(paperId) => setRoute({ name: "viewer", paperId })}
+          />
+        )}
+        {route.name === "discover" && (
+          <DiscoverPage
             onOpenPaper={(paperId) => setRoute({ name: "viewer", paperId })}
           />
         )}
