@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { cn } from "@/lib/cn";
 import { api, errorMessage } from "@/lib/ipc";
-import { selectionToRects, splitAroundWord, wordRangeAtPoint } from "@/lib/pdf";
+import { selectionToRects, splitAroundWord, wordAtPoint } from "@/lib/pdf";
 import { HIGHLIGHT_COLORS, type HighlightColor, type NormalizedRect } from "@/lib/types";
 import { PdfPage } from "./PdfPage";
 import { PdfThumbnail } from "./PdfThumbnail";
@@ -266,12 +266,11 @@ export function ViewerPage({
       );
       if (!hit) return;
 
-      const wordRange = wordRangeAtPoint(x, y);
-      if (!wordRange) return;
-      const wordRects = selectionToRects(wordRange, layer);
-      const wordText = wordRange.toString().trim();
-      if (wordRects.length === 0 || wordText.length === 0) return;
-      void onWordDelete(hit.id, wordRects[0], wordText);
+      // Resolve the word from item geometry (whitespace-delimited), never from
+      // the DOM caret — fallback-font layout puts the caret on the wrong glyph.
+      const word = wordAtPoint(layer, nx, ny);
+      if (!word || word.text.trim().length === 0) return;
+      void onWordDelete(hit.id, word.rect, word.text.trim());
     },
     [textLayers, highlights.data, onWordDelete],
   );
@@ -496,13 +495,17 @@ export function ViewerPage({
             <div
               className="fixed z-20 flex flex-col gap-1"
               style={{ left: selection.current.x, top: selection.current.y }}
-              // The toolbar sits inside the scroll container, whose onMouseUp
-              // re-captures the selection. Without this, clicking any toolbar
-              // button bubbles back up and immediately re-opens the toolbar,
-              // so "취소" appears not to work. preventDefault keeps the text
-              // selection intact for the action; stopPropagation blocks the
-              // re-capture.
-              onMouseDown={(event) => event.preventDefault()}
+              // The toolbar sits inside the scroll container, which drives the
+              // drag-selection on mousedown/up. A mousedown on the toolbar must
+              // NOT reach that handler: selection.onMouseDown clears the current
+              // selection (setCurrent(null)), which unmounts the toolbar before
+              // the click can land — so the button's onClick never fires. Stop
+              // propagation on BOTH mousedown and mouseup; preventDefault keeps
+              // the pending selection intact for the action.
+              onMouseDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
               onMouseUp={(event) => event.stopPropagation()}
             >
               <div

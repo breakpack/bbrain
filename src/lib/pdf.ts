@@ -573,11 +573,153 @@ export function mergeClientBoxesIntoBars(boxes: ClientBox[]): ClientBox[] {
       bar.top = Math.min(bar.top, box.top);
       bar.bottom = Math.max(bar.bottom, box.bottom);
     } else {
-      bars.push({ ...box });
+      // Copy the four fields explicitly: `box` may be a DOMRect (from
+      // getClientRects), whose left/top/right/bottom live on the prototype as
+      // getters, so `{ ...box }` would spread to an empty object and every
+      // coordinate would read back undefined → NaN downstream.
+      bars.push({ top: box.top, bottom: box.bottom, left: box.left, right: box.right });
     }
   }
 
   return bars;
+}
+
+export type LayerGeometry = {
+  pageWidth: number;
+  pageHeight: number;
+  /** Text node → the PDF item it renders: the item's full page-space rect and
+   * character count, for interpolating selection offsets into the rect. */
+  nodes: Map<Node, { rect: NormalizedRect; length: number }>;
+};
+
+const layerGeometry = new WeakMap<HTMLElement, LayerGeometry>();
+
+/** Attach (or clear) item geometry for a rendered layer. Test seam. */
+export function setTextLayerGeometry(layer: HTMLElement, geometry: LayerGeometry | null): void {
+  if (geometry) layerGeometry.set(layer, geometry);
+  else layerGeometry.delete(layer);
+}
+
+/**
+ * Maps each text node of a rendered text layer to the PDF text item it came
+ * from, so selection geometry is computed from item transforms instead of DOM
+ * measurement. The transparent DOM text is laid out with fallback fonts whose
+ * metrics differ from the embedded fonts painted on the canvas — wider in some
+ * faces, narrower in others — so DOM-measured rectangles drift off the ink.
+ * Item transforms are identical in every environment; this is the same source
+ * the extraction pipeline (and the translation hover overlay) uses (§9.5).
+ *
+ * Returns whitespace-trimmed glyph rectangles for `clipRectsToGlyphs`.
+ * pdf.js's TextLayer renders exactly one text node per non-empty item, in item
+ * order; if the DOM ever disagrees, the mapping is dropped and selection falls
+ * back to DOM measurement rather than mis-attributing geometry.
+ */
+export async function registerTextLayerGeometry(
+  page: PDFPageProxy,
+  layer: HTMLElement,
+): Promise<NormalizedRect[]> {
+  const { matrix, pageWidth, pageHeight } = pageSpaceMatrix(page);
+  const content = await page.getTextContent();
+  const styles = content.styles as Record<string, { vertical?: boolean }>;
+
+  const textNodes: Node[] = [];
+  const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) textNodes.push(node);
+
+  const nodes = new Map<Node, { rect: NormalizedRect; length: number }>();
+  const glyphs: NormalizedRect[] = [];
+  let cursor = 0;
+
+  for (const item of content.items) {
+    if (!("str" in item) || item.str.length === 0) continue;
+    const node = textNodes[cursor];
+    if (!node || node.textContent !== item.str) {
+      setTextLayerGeometry(layer, null);
+      return [];
+    }
+    cursor++;
+
+    const tx = Util.transform(matrix, item.transform);
+    const fontHeight = Math.hypot(tx[2], tx[3]);
+    const vertical = styles[item.fontName]?.vertical ?? false;
+    const width = vertical ? fontHeight : item.width;
+    const height = vertical ? item.height : fontHeight;
+    if (width <= 0 || height <= 0) continue;
+
+    const rect: NormalizedRect = {
+      x: tx[4] / pageWidth,
+      y: (tx[5] - height) / pageHeight,
+      width: width / pageWidth,
+      height: height / pageHeight,
+    };
+    nodes.set(node, { rect, length: item.str.length });
+
+    // Tight glyph rect for clipping: shave the whitespace padding off both
+    // ends at the item's average character width, so a clip never keeps a
+    // trailing space reaching into the gutter.
+    const lead = item.str.length - item.str.trimStart().length;
+    const trail = item.str.length - item.str.trimEnd().length;
+    const inkLen = item.str.length - lead - trail;
+    if (inkLen <= 0) continue;
+    const per = rect.width / item.str.length;
+    glyphs.push({
+      x: rect.x + per * lead,
+      y: rect.y,
+      width: per * inkLen,
+      height: rect.height,
+    });
+  }
+
+  setTextLayerGeometry(layer, { pageWidth, pageHeight, nodes });
+  return glyphs;
+}
+
+/**
+ * Selection rectangles from registered item geometry: each selected text
+ * node's character offsets are interpolated into its item's page-space rect at
+ * the average character width (only the two drag endpoints are ever partial —
+ * interior items are covered whole). Merging happens in page-point units so
+ * the bar heuristics see the same proportions as the client-space path.
+ */
+function selectionToItemRects(
+  range: Range,
+  layer: HTMLElement,
+  geometry: LayerGeometry,
+): NormalizedRect[] {
+  const { pageWidth, pageHeight, nodes } = geometry;
+  const collected: ClientBox[] = [];
+  const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!range.intersectsNode(node)) continue;
+    const item = nodes.get(node);
+    if (!item) continue;
+
+    const text = node.textContent ?? "";
+    let start = node === range.startContainer ? range.startOffset : 0;
+    let end = node === range.endContainer ? range.endOffset : text.length;
+    while (start < end && /\s/.test(text[start])) start++;
+    while (end > start && /\s/.test(text[end - 1])) end--;
+    if (end <= start) continue;
+
+    const per = (item.rect.width * pageWidth) / item.length;
+    collected.push({
+      left: item.rect.x * pageWidth + per * start,
+      right: item.rect.x * pageWidth + per * end,
+      top: item.rect.y * pageHeight,
+      bottom: (item.rect.y + item.rect.height) * pageHeight,
+    });
+  }
+
+  const rects: NormalizedRect[] = [];
+  for (const bar of mergeClientBoxesIntoBars(collected)) {
+    rects.push({
+      x: bar.left / pageWidth,
+      y: bar.top / pageHeight,
+      width: (bar.right - bar.left) / pageWidth,
+      height: (bar.bottom - bar.top) / pageHeight,
+    });
+  }
+  return rects;
 }
 
 /**
@@ -588,6 +730,11 @@ export function mergeClientBoxesIntoBars(boxes: ClientBox[]): ClientBox[] {
  * continuous bar per contiguous run of text (§9.5).
  */
 export function selectionToRects(range: Range, layer: HTMLElement): NormalizedRect[] {
+  // Prefer PDF item geometry when the layer has it registered — exact against
+  // the canvas ink in every engine. DOM measurement below is the fallback.
+  const geometry = layerGeometry.get(layer);
+  if (geometry) return selectionToItemRects(range, layer, geometry);
+
   const box = layer.getBoundingClientRect();
   if (box.width === 0 || box.height === 0) return [];
 
@@ -627,6 +774,7 @@ export function selectionToRects(range: Range, layer: HTMLElement): NormalizedRe
       height: (bar.bottom - bar.top) / box.height,
     });
   }
+
 
   return rects;
 }
@@ -711,44 +859,46 @@ export function splitAroundWord(
 }
 
 /**
- * The whitespace-delimited word under a point (in client coordinates), or null.
- * Used to delete a single word from a highlight (DEVELOPMENT.md §9.5).
+ * The whitespace-delimited word under a page-normalized point, resolved from
+ * the layer's registered item geometry — never from DOM caret positioning
+ * (`caretRangeFromPoint` maps the click through the fallback-font layout,
+ * which drifts off the canvas ink, so it picks the wrong character or even the
+ * wrong word). The character under the point is found by interpolating at the
+ * item's average character width, then expanded to the surrounding whitespace
+ * boundaries. Used to delete a single word from a highlight (§9.5).
  */
-export function wordRangeAtPoint(x: number, y: number): Range | null {
-  const caret = document.caretRangeFromPoint?.(x, y);
-  if (!caret) return null;
-  const node = caret.startContainer;
-  if (node.nodeType !== Node.TEXT_NODE) return null;
+export function wordAtPoint(
+  layer: HTMLElement,
+  nx: number,
+  ny: number,
+): { rect: NormalizedRect; text: string } | null {
+  const geometry = layerGeometry.get(layer);
+  if (!geometry) return null;
 
-  const text = node.textContent ?? "";
-  const offset = caret.startOffset;
+  for (const [node, item] of geometry.nodes) {
+    const { rect, length } = item;
+    if (ny < rect.y || ny > rect.y + rect.height) continue;
+    if (nx < rect.x || nx > rect.x + rect.width) continue;
 
-  // Intl.Segmenter gives proper word boundaries without needing a live selection
-  // (native selection is disabled on the text layer). The pdf.js text node can
-  // hold several words, so segmenting picks exactly the one under the caret.
-  const Segmenter = (Intl as unknown as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
-  if (Segmenter) {
-    const segmenter = new Segmenter(undefined, { granularity: "word" });
-    for (const part of segmenter.segment(text)) {
-      const partEnd = part.index + part.segment.length;
-      if (part.isWordLike && offset >= part.index && offset <= partEnd) {
-        const range = document.createRange();
-        range.setStart(node, part.index);
-        range.setEnd(node, partEnd);
-        return range;
-      }
-    }
+    const text = node.textContent ?? "";
+    const per = rect.width / length;
+    const offset = Math.min(length - 1, Math.max(0, Math.floor((nx - rect.x) / per)));
+    if (/\s/.test(text[offset] ?? "")) return null; // clicked the gap between words
+
+    let start = offset;
+    let end = offset + 1;
+    while (start > 0 && !/\s/.test(text[start - 1])) start--;
+    while (end < length && !/\s/.test(text[end])) end++;
+
+    return {
+      text: text.slice(start, end),
+      rect: {
+        x: rect.x + per * start,
+        y: rect.y,
+        width: per * (end - start),
+        height: rect.height,
+      },
+    };
   }
-
-  // Fallback: expand over the text node by whitespace.
-  const isWord = (char: string | undefined) => Boolean(char) && !/\s/.test(char as string);
-  let start = offset;
-  let end = offset;
-  while (start > 0 && isWord(text[start - 1])) start--;
-  while (end < text.length && isWord(text[end])) end++;
-  if (start === end) return null;
-  const range = document.createRange();
-  range.setStart(node, start);
-  range.setEnd(node, end);
-  return range;
+  return null;
 }

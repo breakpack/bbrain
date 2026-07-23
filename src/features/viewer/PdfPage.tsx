@@ -2,6 +2,7 @@ import { TextLayer, type PDFPageProxy, type RenderTask } from "pdfjs-dist";
 import { useEffect, useRef, useState } from "react";
 
 import type { Highlight, NormalizedRect, Sentence } from "@/lib/types";
+import { registerTextLayerGeometry } from "@/lib/pdf";
 import { cn } from "@/lib/cn";
 
 const HIGHLIGHT_FILL: Record<string, string> = {
@@ -138,25 +139,12 @@ export function PdfPage({
       await textLayer.render();
       if (cancelled) return;
 
-      // Capture glyph rectangles (normalized to the page box) so highlights can
-      // be clipped to the text. Scale-independent, so computed once per render.
-      const box = container.getBoundingClientRect();
-      const captured: NormalizedRect[] = [];
-      if (box.width > 0 && box.height > 0) {
-        for (const span of textLayerDiv.querySelectorAll("span")) {
-          for (const g of span.getClientRects()) {
-            if (g.width > 0 && g.height > 0) {
-              captured.push({
-                x: (g.left - box.left) / box.width,
-                y: (g.top - box.top) / box.height,
-                width: g.width / box.width,
-                height: g.height / box.height,
-              });
-            }
-          }
-        }
-      }
-      setGlyphs(captured);
+      // Map the rendered text nodes to their PDF items so selection geometry
+      // comes from item transforms (exact against the canvas ink), and keep
+      // the trimmed glyph rects to clip highlights to the text (§9.5).
+      const glyphRects = await registerTextLayerGeometry(page, textLayerDiv);
+      if (cancelled) return;
+      setGlyphs(glyphRects);
 
       onTextLayerReady(page.pageNumber, textLayerDiv);
     };
@@ -222,7 +210,7 @@ export function PdfPage({
           />
         ))}
 
-        {selectionRects.map((rect, index) => (
+        {clipRectsToGlyphs(selectionRects, glyphs).map((rect, index) => (
           <span
             key={`selection-${index}`}
             className="absolute rounded-[2px]"

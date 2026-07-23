@@ -12,9 +12,12 @@ import {
   loadDocument,
   mergeClientBoxesIntoBars,
   mergeRects,
+  selectionToRects,
+  setTextLayerGeometry,
   splitAroundWord,
   splitSentenceRanges,
   subtractRect,
+  wordAtPoint,
   type ClientBox,
   type ExtractedItem,
 } from "./pdf";
@@ -235,6 +238,125 @@ describe("selection bar merging", () => {
     expect(bars).toHaveLength(1);
     expect(bars[0].left).toBe(40);
     expect(bars[0].right).toBe(200);
+  });
+
+  it("computes selection rects from registered PDF item geometry, not the DOM", () => {
+    // The DOM text layer is laid out with fallback fonts whose widths drift
+    // from the canvas ink, so selection geometry must come from the item
+    // transforms. jsdom has no layout at all (every client rect is 0), which
+    // doubles as proof this path never consults DOM measurement.
+    const layer = document.createElement("div");
+    const one = document.createElement("span");
+    one.textContent = "Hello";
+    const two = document.createElement("span");
+    two.textContent = "world";
+    layer.append(one, two);
+
+    setTextLayerGeometry(layer, {
+      pageWidth: 600,
+      pageHeight: 800,
+      nodes: new Map([
+        [one.firstChild!, { rect: { x: 0.1, y: 0.1, width: 0.1, height: 0.02 }, length: 5 }],
+        [two.firstChild!, { rect: { x: 0.21, y: 0.1, width: 0.1, height: 0.02 }, length: 5 }],
+      ]),
+    });
+
+    const range = document.createRange();
+    range.setStart(one.firstChild!, 0);
+    range.setEnd(two.firstChild!, 5);
+
+    const rects = selectionToRects(range, layer);
+
+    // One merged bar spanning both items exactly (the 6pt inter-word gap is
+    // under the 1.2-line-height merge threshold).
+    expect(rects).toHaveLength(1);
+    expect(rects[0].x).toBeCloseTo(0.1, 5);
+    expect(rects[0].x + rects[0].width).toBeCloseTo(0.31, 5);
+    expect(rects[0].y).toBeCloseTo(0.1, 5);
+    expect(rects[0].height).toBeCloseTo(0.02, 5);
+  });
+
+  it("interpolates a partial item selection at the average character width", () => {
+    const layer = document.createElement("div");
+    const span = document.createElement("span");
+    span.textContent = "abcdefghij";
+    layer.append(span);
+
+    setTextLayerGeometry(layer, {
+      pageWidth: 600,
+      pageHeight: 800,
+      nodes: new Map([
+        [span.firstChild!, { rect: { x: 0, y: 0.5, width: 0.5, height: 0.02 }, length: 10 }],
+      ]),
+    });
+
+    const range = document.createRange();
+    range.setStart(span.firstChild!, 2);
+    range.setEnd(span.firstChild!, 5);
+
+    const rects = selectionToRects(range, layer);
+
+    expect(rects).toHaveLength(1);
+    expect(rects[0].x).toBeCloseTo(0.1, 5); // 2/10 of 0.5
+    expect(rects[0].width).toBeCloseTo(0.15, 5); // 3/10 of 0.5
+  });
+
+  it("finds the whitespace-delimited word under a point from item geometry", () => {
+    // "Hello world": 11 chars over width 0.11 → 0.01 per char, at y 0.2..0.22.
+    const layer = document.createElement("div");
+    const span = document.createElement("span");
+    span.textContent = "Hello world";
+    layer.append(span);
+    setTextLayerGeometry(layer, {
+      pageWidth: 600,
+      pageHeight: 800,
+      nodes: new Map([
+        [span.firstChild!, { rect: { x: 0.1, y: 0.2, width: 0.11, height: 0.02 }, length: 11 }],
+      ]),
+    });
+
+    // A point over the 'o' of "world" (index 7).
+    const word = wordAtPoint(layer, 0.175, 0.21);
+
+    expect(word?.text).toBe("world");
+    expect(word?.rect.x).toBeCloseTo(0.16, 5); // "world" starts at index 6
+    expect(word?.rect.width).toBeCloseTo(0.05, 5); // 5 chars
+
+    // The gap between the words is not a word.
+    expect(wordAtPoint(layer, 0.155, 0.21)).toBeNull();
+    // Outside the item entirely.
+    expect(wordAtPoint(layer, 0.5, 0.21)).toBeNull();
+  });
+
+  it("copies coordinates off a DOMRect whose fields are prototype getters", () => {
+    // getClientRects() returns DOMRects: left/top/right/bottom live on the
+    // prototype as getters, not own properties. Spreading one (`{ ...box }`)
+    // yields an empty object, so a non-merged bar would read back undefined and
+    // every downstream coordinate would be NaN. The merge must copy the fields.
+    const proto = {
+      get left() {
+        return 40;
+      },
+      get right() {
+        return 120;
+      },
+      get top() {
+        return 0;
+      },
+      get bottom() {
+        return 10;
+      },
+    };
+    const domLike = Object.create(proto) as ClientBox;
+    expect({ ...domLike }).toEqual({}); // guards the assumption this test rests on
+
+    const bars = mergeClientBoxesIntoBars([domLike]);
+
+    expect(bars).toHaveLength(1);
+    expect(bars[0].left).toBe(40);
+    expect(bars[0].right).toBe(120);
+    expect(bars[0].top).toBe(0);
+    expect(bars[0].bottom).toBe(10);
   });
 });
 
