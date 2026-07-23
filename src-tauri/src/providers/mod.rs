@@ -12,7 +12,11 @@ use crate::error::{AppError, Result};
 use request::{ChatRequest, StructuredRequest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+// "lowercase", NOT "snake_case": the frontend sends "openai"/"deepseek", and
+// snake_case would expect "open_ai"/"deep_seek" — the IPC deserialization then
+// fails before the command runs (only "anthropic" is identical under both).
+// Must match `as_str`/`from_str` below and `Provider` in src/lib/types.ts.
+#[serde(rename_all = "lowercase")]
 pub enum Provider {
     OpenAi,
     Anthropic,
@@ -201,6 +205,21 @@ mod tests {
             assert_eq!(Provider::from_str(provider.as_str()), Some(provider));
         }
         assert_eq!(Provider::from_str("gemini"), None);
+    }
+
+    /// The IPC wire format must match the frontend's Provider union
+    /// ("openai" | "anthropic" | "deepseek"). snake_case would silently break
+    /// deserialization for every multi-word name ("open_ai", "deep_seek") —
+    /// the command then fails before it runs, surfacing only as "알 수 없는
+    /// 오류" in the UI.
+    #[test]
+    fn provider_serde_matches_the_frontend_union() {
+        for provider in [Provider::OpenAi, Provider::Anthropic, Provider::DeepSeek] {
+            let wire = serde_json::to_string(&provider).unwrap();
+            assert_eq!(wire, format!("\"{}\"", provider.as_str()));
+            let back: Provider = serde_json::from_str(&wire).unwrap();
+            assert_eq!(back, provider);
+        }
     }
 
     #[test]
