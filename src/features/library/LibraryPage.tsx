@@ -1,6 +1,8 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  Check,
   FileUp,
+  FolderPlus,
   Grid2x2,
   List,
   Plus,
@@ -83,6 +85,22 @@ export function LibraryPage({ onOpenPaper }: { onOpenPaper: (paperId: string) =>
   const groups = useGroups();
   const tags = useTags();
   const importPapers = useImportPapers();
+  const updatePaper = useUpdatePaper();
+
+  /** Files an existing paper into a group; already a member is a quiet no-op. */
+  const addToGroup = useCallback(
+    (paper: Paper, targetGroupId: string) => {
+      if (paper.groupIds.includes(targetGroupId)) return;
+      setError(null);
+      updatePaper.mutate(
+        { paperId: paper.id, patch: { groupIds: [...paper.groupIds, targetGroupId] } },
+        { onError: (cause) => setError(errorMessage(cause)) },
+      );
+    },
+    [updatePaper],
+  );
+
+  const paperDrag = useDragToGroup(addToGroup);
 
   const runImport = useCallback(
     async (paths: string[]) => {
@@ -130,6 +148,7 @@ export function LibraryPage({ onOpenPaper }: { onOpenPaper: (paperId: string) =>
 
         <GroupList
           activeGroupId={groupId}
+          dropTargetId={paperDrag.drag?.overGroupId ?? null}
           onSelect={(id) => {
             setGroupId(id);
             setView("all");
@@ -254,9 +273,9 @@ export function LibraryPage({ onOpenPaper }: { onOpenPaper: (paperId: string) =>
 
         {papers.isSuccess && papers.data.length > 0 && (
           layout === "list" ? (
-            <PaperList papers={papers.data} onOpen={onOpenPaper} />
+            <PaperList papers={papers.data} onOpen={onOpenPaper} onDragStart={paperDrag.start} />
           ) : (
-            <PaperGrid papers={papers.data} onOpen={onOpenPaper} />
+            <PaperGrid papers={papers.data} onOpen={onOpenPaper} onDragStart={paperDrag.start} />
           )
         )}
 
@@ -264,8 +283,92 @@ export function LibraryPage({ onOpenPaper }: { onOpenPaper: (paperId: string) =>
           <div className="pointer-events-none absolute inset-4 rounded-card border-2 border-dashed border-primary" />
         )}
       </main>
+
+      {paperDrag.drag && (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed z-30 max-w-[280px] truncate rounded-control border border-line bg-canvas px-3 py-1.5 text-caption text-ink shadow-card"
+          style={{ left: paperDrag.drag.x + 12, top: paperDrag.drag.y + 12 }}
+        >
+          {paperDrag.drag.paper.title}
+        </div>
+      )}
     </div>
   );
+}
+
+/**
+ * Mouse-driven drag of a paper onto a sidebar group. HTML5 drag-and-drop can't
+ * be used here: Tauri keeps the webview's native drag interception enabled for
+ * OS file drops, which swallows `draggable` events on macOS. A drag starts
+ * once the pointer moves past a small threshold, so plain clicks on the row
+ * (open, favourite, delete) keep working; the click after a real drag is
+ * suppressed. Drop targets are the sidebar entries carrying `data-group-id`.
+ */
+function useDragToGroup(onDrop: (paper: Paper, groupId: string) => void) {
+  const [drag, setDrag] = useState<{
+    paper: Paper;
+    x: number;
+    y: number;
+    overGroupId: string | null;
+  } | null>(null);
+
+  const start = useCallback(
+    (paper: Paper) => (event: React.MouseEvent) => {
+      if (event.button !== 0) return;
+      const originX = event.clientX;
+      const originY = event.clientY;
+      let active = false;
+
+      const groupUnder = (x: number, y: number) =>
+        document
+          .elementFromPoint(x, y)
+          ?.closest("[data-group-id]")
+          ?.getAttribute("data-group-id") ?? null;
+
+      const onMove = (move: MouseEvent) => {
+        if (!active) {
+          if (Math.hypot(move.clientX - originX, move.clientY - originY) < 5) return;
+          active = true;
+          document.body.style.userSelect = "none";
+          window.getSelection()?.removeAllRanges();
+        }
+        setDrag({
+          paper,
+          x: move.clientX,
+          y: move.clientY,
+          overGroupId: groupUnder(move.clientX, move.clientY),
+        });
+      };
+
+      const onUp = (up: MouseEvent) => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        if (active) {
+          document.body.style.userSelect = "";
+          // The mouseup completes a click on whatever the pointer is over —
+          // swallow it so a drop doesn't also open a paper or select a group.
+          window.addEventListener(
+            "click",
+            (click) => {
+              click.stopPropagation();
+              click.preventDefault();
+            },
+            { capture: true, once: true },
+          );
+          const groupId = groupUnder(up.clientX, up.clientY);
+          if (groupId) onDrop(paper, groupId);
+        }
+        setDrag(null);
+      };
+
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [onDrop],
+  );
+
+  return { drag, start };
 }
 
 /**
@@ -341,7 +444,15 @@ function ImportReport({
   );
 }
 
-function PaperList({ papers, onOpen }: { papers: Paper[]; onOpen: (id: string) => void }) {
+function PaperList({
+  papers,
+  onOpen,
+  onDragStart,
+}: {
+  papers: Paper[];
+  onOpen: (id: string) => void;
+  onDragStart: (paper: Paper) => (event: React.MouseEvent) => void;
+}) {
   return (
     <table className="w-full border-collapse">
       <thead>
@@ -359,14 +470,22 @@ function PaperList({ papers, onOpen }: { papers: Paper[]; onOpen: (id: string) =
       </thead>
       <tbody>
         {papers.map((paper) => (
-          <PaperRow key={paper.id} paper={paper} onOpen={onOpen} />
+          <PaperRow key={paper.id} paper={paper} onOpen={onOpen} onDragStart={onDragStart} />
         ))}
       </tbody>
     </table>
   );
 }
 
-function PaperRow({ paper, onOpen }: { paper: Paper; onOpen: (id: string) => void }) {
+function PaperRow({
+  paper,
+  onOpen,
+  onDragStart,
+}: {
+  paper: Paper;
+  onOpen: (id: string) => void;
+  onDragStart: (paper: Paper) => (event: React.MouseEvent) => void;
+}) {
   const updatePaper = useUpdatePaper();
   const deletePaper = useDeletePaper();
   const [confirming, setConfirming] = useState(false);
@@ -402,7 +521,10 @@ function PaperRow({ paper, onOpen }: { paper: Paper; onOpen: (id: string) => voi
   }
 
   return (
-    <tr className="group/row border-b border-line transition-colors duration-fast hover:bg-canvas-soft">
+    <tr
+      onMouseDown={onDragStart(paper)}
+      className="group/row cursor-grab border-b border-line transition-colors duration-fast hover:bg-canvas-soft"
+    >
       <td className="py-md pr-md">
         <button
           onClick={() => onOpen(paper.id)}
@@ -428,6 +550,7 @@ function PaperRow({ paper, onOpen }: { paper: Paper; onOpen: (id: string) => voi
       </td>
       <td className="py-md">
         <div className="flex items-center gap-1">
+          <GroupMenu paper={paper} />
           <button
             aria-label={paper.isFavorite ? "즐겨찾기 해제" : "즐겨찾기에 추가"}
             aria-pressed={paper.isFavorite}
@@ -458,11 +581,19 @@ function PaperRow({ paper, onOpen }: { paper: Paper; onOpen: (id: string) => voi
   );
 }
 
-function PaperGrid({ papers, onOpen }: { papers: Paper[]; onOpen: (id: string) => void }) {
+function PaperGrid({
+  papers,
+  onOpen,
+  onDragStart,
+}: {
+  papers: Paper[];
+  onOpen: (id: string) => void;
+  onDragStart: (paper: Paper) => (event: React.MouseEvent) => void;
+}) {
   return (
     <ul className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-lg">
       {papers.map((paper) => (
-        <li key={paper.id}>
+        <li key={paper.id} onMouseDown={onDragStart(paper)} className="cursor-grab">
           <button
             onClick={() => onOpen(paper.id)}
             className="flex w-full flex-col gap-sm rounded-card p-2 text-left transition-shadow duration-fast hover:shadow-card"
@@ -484,9 +615,12 @@ function PaperGrid({ papers, onOpen }: { papers: Paper[]; onOpen: (id: string) =
 
 function GroupList({
   activeGroupId,
+  dropTargetId,
   onSelect,
 }: {
   activeGroupId?: string;
+  /** Group currently under a dragged paper — shown as the drop target. */
+  dropTargetId: string | null;
   onSelect: (groupId: string) => void;
 }) {
   const groups = useGroups();
@@ -532,7 +666,14 @@ function GroupList({
 
       <ul className="flex flex-col gap-xs">
         {groups.data?.map((group) => (
-          <li key={group.id} className="group/item flex items-center">
+          <li
+            key={group.id}
+            data-group-id={group.id}
+            className={cn(
+              "group/item flex items-center rounded-control",
+              dropTargetId === group.id && "outline outline-2 outline-primary",
+            )}
+          >
             <FilterButton
               className="flex-1"
               label={group.name}
@@ -551,6 +692,95 @@ function GroupList({
         ))}
       </ul>
     </section>
+  );
+}
+
+/**
+ * Per-paper group membership menu: a folder button opening a checkable list of
+ * every group. Selecting a group toggles the paper in or out of it — the
+ * button-based counterpart to dragging the paper onto a sidebar group (§8.3).
+ */
+function GroupMenu({ paper }: { paper: Paper }) {
+  const [open, setOpen] = useState(false);
+  const groups = useGroups();
+  const updatePaper = useUpdatePaper();
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Light dismiss: a click anywhere else, or Escape, closes the menu.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const toggle = (targetGroupId: string) => {
+    const member = paper.groupIds.includes(targetGroupId);
+    updatePaper.mutate({
+      paperId: paper.id,
+      patch: {
+        groupIds: member
+          ? paper.groupIds.filter((id) => id !== targetGroupId)
+          : [...paper.groupIds, targetGroupId],
+      },
+    });
+  };
+
+  return (
+    <div ref={rootRef} className="relative" onMouseDown={(event) => event.stopPropagation()}>
+      <button
+        aria-label={`${paper.title} 그룹에 추가`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        className={cn(
+          "rounded-sm p-1 text-ink-body transition-opacity duration-fast hover:text-primary focus-visible:opacity-100 group-hover/row:opacity-100",
+          open ? "opacity-100 text-primary" : "opacity-0",
+        )}
+      >
+        <FolderPlus aria-hidden className="h-[18px] w-[18px]" />
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          aria-label="그룹 선택"
+          className="absolute right-0 top-full z-20 mt-1 w-[200px] rounded-control border border-line bg-canvas p-1 shadow-card"
+        >
+          {(groups.data?.length ?? 0) === 0 ? (
+            <p className="px-2 py-1.5 text-caption text-ink-body">
+              그룹이 없습니다. 사이드바의 +로 먼저 그룹을 만드세요.
+            </p>
+          ) : (
+            groups.data?.map((group) => {
+              const member = paper.groupIds.includes(group.id);
+              return (
+                <button
+                  key={group.id}
+                  role="menuitemcheckbox"
+                  aria-checked={member}
+                  disabled={updatePaper.isPending}
+                  onClick={() => toggle(group.id)}
+                  className="flex w-full items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-caption text-ink transition-colors duration-fast hover:bg-canvas-soft disabled:opacity-50"
+                >
+                  <span className="truncate">{group.name}</span>
+                  {member && <Check aria-hidden className="h-4 w-4 shrink-0 text-primary" />}
+                </button>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

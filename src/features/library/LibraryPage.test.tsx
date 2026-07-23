@@ -119,4 +119,64 @@ describe("library", () => {
 
     expect(patched).toMatchObject({ paperId: "p1", patch: { isFavorite: true } });
   });
+
+  it("files a paper into a group from the row's group menu", async () => {
+    let patched: unknown = null;
+    mockCommands({
+      ...BASE,
+      list_groups: () => [
+        { id: "g1", name: "통계 교육", color: null, sortOrder: 0, paperCount: 0 },
+      ],
+      list_papers: () => [paper()],
+      update_paper: (args) => {
+        patched = args;
+        return paper({ groupIds: ["g1"] });
+      },
+    });
+
+    renderWithQuery(<LibraryPage onOpenPaper={() => {}} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: /그룹에 추가/ }),
+    );
+    await userEvent.click(await screen.findByRole("menuitemcheckbox", { name: "통계 교육" }));
+
+    expect(patched).toMatchObject({ paperId: "p1", patch: { groupIds: ["g1"] } });
+  });
+
+  it("removes a paper from a group it already belongs to via the same menu", async () => {
+    let patched: unknown = null;
+    mockCommands({
+      ...BASE,
+      list_groups: () => [
+        { id: "g1", name: "통계 교육", color: null, sortOrder: 0, paperCount: 1 },
+      ],
+      list_papers: () => [paper({ groupIds: ["g1"] })],
+      update_paper: (args) => {
+        patched = args;
+        return paper({ groupIds: [] });
+      },
+    });
+
+    renderWithQuery(<LibraryPage onOpenPaper={() => {}} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: /그룹에 추가/ }),
+    );
+
+    const item = await screen.findByRole("menuitemcheckbox", { name: "통계 교육" });
+    expect(item).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(item);
+
+    expect(patched).toMatchObject({ paperId: "p1", patch: { groupIds: [] } });
+  });
+
+  it("explains how to create a group when the menu is opened with none", async () => {
+    mockCommands({ ...BASE, list_papers: () => [paper()] });
+
+    renderWithQuery(<LibraryPage onOpenPaper={() => {}} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: /그룹에 추가/ }),
+    );
+
+    expect(await screen.findByText(/그룹이 없습니다/)).toBeInTheDocument();
+  });
 });

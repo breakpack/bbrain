@@ -80,6 +80,8 @@ export function useUpdatePaper() {
     onSuccess: (paper) => {
       client.setQueryData(libraryKeys.paper(paper.id), paper);
       void client.invalidateQueries({ queryKey: ["papers"] });
+      // Group membership edits change each group's paper count in the sidebar.
+      void client.invalidateQueries({ queryKey: libraryKeys.groups });
     },
   });
 }
