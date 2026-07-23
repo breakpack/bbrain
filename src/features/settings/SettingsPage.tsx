@@ -33,6 +33,8 @@ export function SettingsPage({ settings }: { settings: Settings }) {
   const active = settings.activeProvider;
 
   return (
+    // The app shell's <main> is overflow-hidden, so this page owns its scroll.
+    <div className="h-full overflow-y-auto">
     <div className="mx-auto flex w-full max-w-[840px] flex-col gap-xl p-xl">
       <header className="flex flex-col gap-sm">
         <Eyebrow>설정</Eyebrow>
@@ -159,6 +161,7 @@ export function SettingsPage({ settings }: { settings: Settings }) {
           </div>
         </dl>
       </Card>
+    </div>
     </div>
   );
 }
