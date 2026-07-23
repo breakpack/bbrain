@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Bbrain 런타임 아키텍처",
+    "subtitle": "Tauri 2 · React · Rust — 로컬 우선 논문 리서치 데스크톱",
+    "output": "docs/runtime-architecture.html",
+    "quality_profile": "standard",
+    "views": [
+      {
+        "id": "reading",
+        "label": "읽기 경로",
+        "focus": ["webview", "commands", "db", "storage"],
+        "note": "논문을 열고 읽는 동기 경로 — UI는 IPC로만 코어와 통신한다."
+      },
+      {
+        "id": "ai-pipeline",
+        "label": "AI 파이프라인",
+        "focus": ["commands", "jobs", "providers", "translate", "embedder"],
+        "note": "무거운 작업은 영속 Job Runner가 공급자·로컬 모델로 처리한다."
+      },
+      {
+        "id": "integrations",
+        "label": "외부 연동",
+        "focus": ["keychain", "s2", "obsidian", "commands", "jobs"],
+        "note": "키 보관, 논문 발견, Obsidian 노트 동기화의 경계."
+      }
+    ]
+  },
+  "components": [
+    { "id": "keychain", "type": "security", "label": "OS 자격 증명 저장소", "sublabel": "키체인 / Credential Mgr", "pos": [60, 60], "size": [150, 60] },
+    { "id": "webview", "type": "frontend", "label": "React WebView", "sublabel": "pdf.js 뷰어·그래프·채팅", "pos": [60, 340], "size": [150, 62], "tag": "WKWebView / WebView2" },
+    { "id": "commands", "type": "backend", "label": "IPC 커맨드", "sublabel": "Tauri 2 · Rust", "pos": [320, 340], "size": [130, 62] },
+    { "id": "jobs", "type": "backend", "label": "Job Runner", "sublabel": "분석·번역·동기화 큐", "pos": [320, 520], "size": [130, 62], "tag": "재시작 영속" },
+    { "id": "storage", "type": "database", "label": "관리 PDF 저장소", "sublabel": "원자적 복사 · SHA 중복검사", "pos": [560, 180], "size": [130, 62] },
+    { "id": "db", "type": "database", "label": "SQLite", "sublabel": "sqlite-vec · FTS5 · WAL", "pos": [560, 340], "size": [130, 62] },
+    { "id": "embedder", "type": "backend", "label": "로컬 임베딩", "sublabel": "e5-small · onnxruntime", "pos": [560, 660], "size": [140, 62], "tag": "벡터→SQLite" },
+    { "id": "s2", "type": "external", "label": "Semantic Scholar", "sublabel": "논문 검색 · OA PDF", "pos": [860, 60], "size": [150, 62] },
+    { "id": "providers", "type": "external", "label": "LLM 공급자", "sublabel": "OpenAI·Anthropic·DeepSeek", "pos": [860, 340], "size": [150, 62] },
+    { "id": "translate", "type": "external", "label": "Google Translate", "sublabel": "무료 기계번역", "pos": [860, 480], "size": [150, 62] },
+    { "id": "obsidian", "type": "external", "label": "Obsidian", "sublabel": "Local REST API + vault", "pos": [860, 640], "size": [150, 62] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Bbrain 데스크톱 앱 · Tauri 2 (macOS / Windows)", "wraps": ["webview", "commands", "jobs", "storage", "db", "embedder"] }
+  ],
+  "connections": [
+    { "id": "ui-ipc", "from": "webview", "to": "commands", "label": "invoke", "variant": "emphasis", "labelAt": [240, 358] },
+    { "id": "ipc-sql", "from": "commands", "to": "db", "label": "SQL" },
+    { "id": "ipc-pdf", "from": "commands", "to": "storage", "label": "PDF 저장", "fromSide": "top", "toSide": "bottom", "via": [[385, 290], [625, 290]] },
+    { "id": "ipc-s2", "from": "commands", "to": "s2", "label": "논문 검색·가져오기", "variant": "dashed", "fromSide": "top", "toSide": "bottom", "via": [[385, 145], [935, 145]] },
+    { "id": "ipc-keys", "from": "commands", "to": "keychain", "label": "API 키", "variant": "security", "fromSide": "left", "toSide": "right", "via": [[265, 371], [265, 90]], "labelAt": [265, 250] },
+    { "id": "ipc-enqueue", "from": "commands", "to": "jobs", "label": "enqueue", "fromSide": "bottom", "toSide": "top", "labelAt": [385, 461] },
+    { "id": "jobs-llm", "from": "jobs", "to": "providers", "label": "분석·채팅 · SSE", "variant": "emphasis", "fromSide": "right", "toSide": "left", "via": [[750, 551], [750, 371]], "labelAt": [595, 543] },
+    { "id": "jobs-translate", "from": "jobs", "to": "translate", "label": "페이지 번역", "variant": "dashed", "fromSide": "right", "toSide": "left", "via": [[500, 551], [500, 511]], "labelAt": [660, 503] },
+    { "id": "jobs-obsidian", "from": "jobs", "to": "obsidian", "label": "노트 동기화 · REST→파일 폴백", "variant": "dashed", "fromSide": "right", "toSide": "left", "via": [[500, 551], [500, 745], [790, 745], [790, 671]], "labelAt": [645, 737] },
+    { "id": "jobs-embed", "from": "jobs", "to": "embedder", "label": "청크 임베딩", "fromSide": "bottom", "toSide": "left", "via": [[385, 691]] }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "런타임 경로",
+      "items": [
+        "UI는 IPC invoke·이벤트로만 Rust 코어와 통신",
+        "무거운 작업은 Job Runner 큐로 — 재시작에도 영속",
+        "PDF·분석·벡터·하이라이트는 전부 로컬 SQLite"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "보안 불변식",
+      "items": [
+        "API 키는 OS 자격 증명 저장소에만 — SQLite엔 참조만",
+        "오류·로그에 키와 논문 본문 비노출",
+        "Obsidian self-signed 허용은 loopback 호스트 한정"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "플랫폼 메모",
+      "items": [
+        "WKWebView 우회는 양 플랫폼 공통 경로로 적용",
+        "선택·하이라이트 좌표는 PDF 아이템 transform 기준",
+        "Obsidian이 꺼져 있으면 파일 기반 자동 폴백"
+      ]
+    }
+  ]
+}
