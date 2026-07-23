@@ -216,8 +216,15 @@ fn semantic_edges(
 fn signature(conn: &Connection) -> Result<String> {
     let generation = settings_repo::get(conn)?.index_generation;
 
-    let mut statement =
-        conn.prepare("SELECT paper_id, content_hash FROM analyses ORDER BY paper_id")?;
+    // JOIN papers: an orphaned analysis (its paper deleted while foreign keys
+    // were off, e.g. rows from early dev builds) must neither enter the
+    // signature nor the rebuild — inserting its topics violates the
+    // paper_topics FK and kills the whole graph page.
+    let mut statement = conn.prepare(
+        "SELECT a.paper_id, a.content_hash FROM analyses a
+         JOIN papers p ON p.id = a.paper_id
+         ORDER BY a.paper_id",
+    )?;
     let rows = statement
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -249,7 +256,11 @@ fn rebuild_blocking(app: &AppHandle) -> Result<()> {
 
     let (analyses, sig) = {
         let conn = state.db.conn();
-        let mut statement = conn.prepare("SELECT paper_id, structured_json FROM analyses")?;
+        // Same JOIN as signature(): only analyses whose paper still exists.
+        let mut statement = conn.prepare(
+            "SELECT a.paper_id, a.structured_json FROM analyses a
+             JOIN papers p ON p.id = a.paper_id",
+        )?;
         let rows = statement
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -477,6 +488,39 @@ mod tests {
             label: label.into(),
             papers: papers.iter().map(|s| s.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn an_orphaned_analysis_does_not_enter_the_signature() {
+        // A paper deleted while foreign keys were off (early dev builds) leaves
+        // its analysis behind; rebuilding from it violates the paper_topics FK
+        // and takes the whole graph page down. The signature — and therefore
+        // the rebuild input — must only see analyses whose paper still exists.
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let conn = db.conn();
+
+        conn.execute_batch(
+            "INSERT INTO papers (id, sha256, title, managed_path, import_status, page_count,
+                                 is_favorite, created_at, updated_at)
+             VALUES ('p1', 'h1', 'Alive', '/x', 'ready', 1, 0, '2026-01-01', '2026-01-01');
+             INSERT INTO analyses (paper_id, schema_version, provider, model, content_hash,
+                                   structured_json, markdown, created_at)
+             VALUES ('p1', '1', 'anthropic', 'm', 'hash-alive', '{}', '', '2026-01-01');
+             PRAGMA foreign_keys = OFF;
+             INSERT INTO analyses (paper_id, schema_version, provider, model, content_hash,
+                                   structured_json, markdown, created_at)
+             VALUES ('ghost', '1', 'anthropic', 'm', 'hash-ghost', '{}', '', '2026-01-01');
+             PRAGMA foreign_keys = ON;",
+        )
+        .unwrap();
+
+        let with_ghost = signature(&conn).unwrap();
+        conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+        conn.execute("DELETE FROM analyses WHERE paper_id = 'ghost'", []).unwrap();
+        conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+        let without_ghost = signature(&conn).unwrap();
+
+        assert_eq!(with_ghost, without_ghost, "orphan must be invisible to the signature");
     }
 
     #[test]

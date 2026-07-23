@@ -41,6 +41,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "obsidian_rest",
         sql: include_str!("../../migrations/0006_obsidian_rest.sql"),
     },
+    Migration {
+        version: 7,
+        name: "prune_orphan_rows",
+        sql: include_str!("../../migrations/0007_prune_orphan_rows.sql"),
+    },
 ];
 
 pub fn current_version(conn: &Connection) -> Result<i64> {

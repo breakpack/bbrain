@@ -166,8 +166,11 @@ pub struct AppErrorWire(pub AppError);
 impl<E: Into<AppError>> From<E> for AppErrorWire {
     fn from(e: E) -> Self {
         let err = e.into();
-        // The Display impl of AppError is deliberately free of secrets.
-        tracing::warn!(code = ?err.code(), "command failed: {err}");
+        // Debug format so wrapped causes (e.g. the rusqlite error inside
+        // Storage) reach the log — without it every DB failure logs only
+        // "storage error", which is undiagnosable. AppError variants carry
+        // labels and system errors, never keys or provider bodies (§16.1).
+        tracing::warn!(code = ?err.code(), "command failed: {err:?}");
         Self(err)
     }
 }
