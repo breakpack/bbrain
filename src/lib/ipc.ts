@@ -4,6 +4,7 @@ import type {
   CommandError,
   ConfigureProviderInput,
   DiscoverQuery,
+  ObsidianRestHealth,
   DiscoverResults,
   DiscoveredPaper,
   ExtractedPage,
@@ -251,6 +252,15 @@ export const api = {
 
   configureObsidian: (vaultPath: string) =>
     invoke<void>("configure_obsidian", { input: { vaultPath } }),
+
+  /// Connects to Obsidian's Local REST API. An empty url disconnects; apiKey
+  /// may be omitted to re-test with the stored key. Returns the live state.
+  configureObsidianRest: (url: string, apiKey?: string) =>
+    invoke<ObsidianRestHealth>("configure_obsidian_rest", { input: { url, apiKey } }),
+
+  /// null when no endpoint is configured.
+  obsidianRestStatus: () =>
+    invoke<ObsidianRestHealth | null>("obsidian_rest_status"),
 
   syncObsidian: (paperId?: string) => invoke<void>("sync_obsidian", { paperId }),
 

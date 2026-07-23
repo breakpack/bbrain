@@ -103,4 +103,39 @@ describe("settings", () => {
     expect(keyFields).toHaveLength(2);
     expect(keyFields[0]).toHaveAttribute("placeholder", "sk-...");
   });
+
+  it("connects to the Obsidian Local REST API and shows the live state", async () => {
+    let configured: unknown = null;
+    mockCommands({
+      ...BASE,
+      list_provider_models: () => [
+        { id: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
+      ],
+      configure_obsidian_rest: (args) => {
+        configured = args;
+        return "connected";
+      },
+    });
+
+    const withVault = settingsFixture({
+      ...CONNECTED,
+      obsidianVaultPath: "/vault",
+    });
+    renderWithQuery(<SettingsPage settings={withVault} />);
+
+    await userEvent.type(
+      await screen.findByLabelText("엔드포인트"),
+      "{Control>}a{/Control}http://127.0.0.1:27123",
+    );
+    await userEvent.type(
+      screen.getAllByLabelText("API 키").at(-1)!,
+      "obsidian-secret",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Local REST API 연결" }));
+
+    expect(configured).toMatchObject({
+      input: { url: "http://127.0.0.1:27123", apiKey: "obsidian-secret" },
+    });
+    expect(await screen.findByText("연결됨")).toBeInTheDocument();
+  });
 });

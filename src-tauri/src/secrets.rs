@@ -59,6 +59,51 @@ impl CredentialStore for OsCredentialStore {
     }
 }
 
+/// The Obsidian Local REST API key sits beside the provider keys in the OS
+/// credential store, but is not an LLM provider — so it gets its own account
+/// name rather than a `Provider` variant. Cached in memory after the first
+/// read (same §16.1 rationale as the provider cache: fewer keychain prompts).
+pub const OBSIDIAN_REST_ACCOUNT: &str = "obsidian-rest";
+
+static OBSIDIAN_KEY_CACHE: std::sync::Mutex<Option<Option<String>>> =
+    std::sync::Mutex::new(None);
+
+fn obsidian_entry() -> Result<keyring::Entry> {
+    Ok(keyring::Entry::new(SERVICE, OBSIDIAN_REST_ACCOUNT)?)
+}
+
+pub fn set_obsidian_rest_key(api_key: &str) -> Result<String> {
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err(AppError::InvalidInput("empty api key".into()));
+    }
+    obsidian_entry()?.set_password(key)?;
+    *OBSIDIAN_KEY_CACHE.lock().unwrap() = Some(Some(key.to_string()));
+    Ok(format!("{SERVICE}/{OBSIDIAN_REST_ACCOUNT}"))
+}
+
+pub fn get_obsidian_rest_key() -> Result<Option<String>> {
+    if let Some(cached) = OBSIDIAN_KEY_CACHE.lock().unwrap().clone() {
+        return Ok(cached);
+    }
+    let value = match obsidian_entry()?.get_password() {
+        Ok(key) => Some(key),
+        Err(keyring::Error::NoEntry) => None,
+        Err(e) => return Err(e.into()),
+    };
+    *OBSIDIAN_KEY_CACHE.lock().unwrap() = Some(value.clone());
+    Ok(value)
+}
+
+pub fn delete_obsidian_rest_key() -> Result<()> {
+    match obsidian_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(e) => return Err(e.into()),
+    }
+    *OBSIDIAN_KEY_CACHE.lock().unwrap() = Some(None);
+    Ok(())
+}
+
 /// Serves each provider's key from memory after the first read, and invalidates
 /// that entry on any write, so a re-keyed provider is never served a stale
 /// value. Wraps any `CredentialStore`.

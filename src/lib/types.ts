@@ -36,12 +36,18 @@ export type Settings = {
   translationLanguage: string;
   translationEngine: TranslationEngine;
   obsidianVaultPath: string | null;
+  /** Obsidian Local REST API endpoint — the channel MCP servers use. */
+  obsidianRestUrl: string | null;
+  hasObsidianRestKey: boolean;
   embeddingModelId: string;
   embeddingDimension: number;
   indexGeneration: number;
   networkNoticeAcceptedAt: string | null;
   onboardingCompletedAt: string | null;
 };
+
+/** Live state of the Obsidian Local REST API connection. */
+export type ObsidianRestHealth = "connected" | "unauthorized" | "unreachable";
 
 export type SettingsPatch = Partial<{
   language: string;

@@ -36,6 +36,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "deepseek_translation_engine",
         sql: include_str!("../../migrations/0005_deepseek_translation_engine.sql"),
     },
+    Migration {
+        version: 6,
+        name: "obsidian_rest",
+        sql: include_str!("../../migrations/0006_obsidian_rest.sql"),
+    },
 ];
 
 pub fn current_version(conn: &Connection) -> Result<i64> {

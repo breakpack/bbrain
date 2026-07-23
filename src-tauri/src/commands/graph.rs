@@ -123,8 +123,87 @@ pub fn configure_obsidian(
 /// Exports the topic graph to the configured Obsidian vault as linked notes so
 /// its Graph View shows the concept map. Returns the number of topic notes.
 #[tauri::command]
-pub fn export_graph_to_obsidian(app: AppHandle) -> CommandResult<usize> {
-    Ok(crate::obsidian::export_topic_graph(&app)?)
+pub async fn export_graph_to_obsidian(app: AppHandle) -> CommandResult<usize> {
+    Ok(crate::obsidian::export_topic_graph(&app).await?)
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigureObsidianRestInput {
+    /// Local REST API endpoint, e.g. `https://127.0.0.1:27124`. An empty
+    /// string disconnects and removes the stored key.
+    pub url: String,
+    /// Sent once, written straight to the OS credential store (§16.1). Omitted
+    /// when only re-testing the connection with the already-stored key.
+    pub api_key: Option<String>,
+}
+
+/// Connects Bbrain to Obsidian's Local REST API (the channel MCP servers use).
+/// Stores the key, saves the URL, and reports the live connection state.
+#[tauri::command]
+pub async fn configure_obsidian_rest(
+    state: State<'_, AppState>,
+    input: ConfigureObsidianRestInput,
+) -> CommandResult<crate::obsidian::rest::RestHealth> {
+    use crate::obsidian::rest;
+
+    let url = input.url.trim().to_string();
+
+    if url.is_empty() {
+        let conn = state.db.conn();
+        crate::secrets::delete_obsidian_rest_key()?;
+        settings_repo::update(
+            &conn,
+            &settings_repo::SettingsPatch {
+                obsidian_rest_url: Some(String::new()),
+                ..Default::default()
+            },
+        )?;
+        settings_repo::set_obsidian_rest_credential_ref(&conn, None)?;
+        return Ok(rest::RestHealth::Unreachable);
+    }
+
+    {
+        let conn = state.db.conn();
+        settings_repo::update(
+            &conn,
+            &settings_repo::SettingsPatch {
+                obsidian_rest_url: Some(url.clone()),
+                ..Default::default()
+            },
+        )?;
+        if let Some(api_key) = &input.api_key {
+            let reference = crate::secrets::set_obsidian_rest_key(api_key)?;
+            settings_repo::set_obsidian_rest_credential_ref(&conn, Some(&reference))?;
+        }
+    }
+
+    let Some(config) = ({
+        let conn = state.db.conn();
+        rest::load(&conn)?
+    }) else {
+        // URL saved but no key stored yet.
+        return Ok(rest::RestHealth::Unauthorized);
+    };
+
+    Ok(rest::health(&config).await)
+}
+
+/// Live connection state of the configured endpoint, for the settings page.
+#[tauri::command]
+pub async fn obsidian_rest_status(
+    state: State<'_, AppState>,
+) -> CommandResult<Option<crate::obsidian::rest::RestHealth>> {
+    use crate::obsidian::rest;
+
+    let config = {
+        let conn = state.db.conn();
+        rest::load(&conn)?
+    };
+    match config {
+        Some(config) => Ok(Some(rest::health(&config).await)),
+        None => Ok(None),
+    }
 }
 
 /// Re-syncs everything, or one paper.

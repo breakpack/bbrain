@@ -23,6 +23,10 @@ pub struct Settings {
     /// `llm` (the active provider). Free by default.
     pub translation_engine: String,
     pub obsidian_vault_path: Option<String>,
+    /// Obsidian Local REST API endpoint (the channel MCP servers use). When
+    /// set and reachable, vault writes go through it; files are the fallback.
+    pub obsidian_rest_url: Option<String>,
+    pub has_obsidian_rest_key: bool,
     pub embedding_model_id: String,
     pub embedding_dimension: i64,
     pub index_generation: i64,
@@ -42,6 +46,7 @@ pub struct SettingsPatch {
     pub translation_language: Option<String>,
     pub translation_engine: Option<String>,
     pub obsidian_vault_path: Option<String>,
+    pub obsidian_rest_url: Option<String>,
     pub network_notice_accepted: Option<bool>,
     pub onboarding_completed: Option<bool>,
 }
@@ -64,7 +69,8 @@ pub fn get(conn: &Connection) -> Result<Settings> {
                 translation_language, obsidian_vault_path,
                 embedding_model_id, embedding_dimension, index_generation,
                 network_notice_accepted_at, onboarding_completed_at,
-                deepseek_model, deepseek_credential_ref, translation_engine
+                deepseek_model, deepseek_credential_ref, translation_engine,
+                obsidian_rest_url, obsidian_rest_credential_ref
          FROM settings WHERE id = 1",
         [],
         |row| {
@@ -87,6 +93,8 @@ pub fn get(conn: &Connection) -> Result<Settings> {
                 deepseek_model: row.get(13)?,
                 has_deepseek_key: row.get::<_, Option<String>>(14)?.is_some(),
                 translation_engine: row.get(15)?,
+                obsidian_rest_url: row.get(16)?,
+                has_obsidian_rest_key: row.get::<_, Option<String>>(17)?.is_some(),
             })
         },
     )?;
@@ -145,6 +153,19 @@ pub fn update(conn: &Connection, patch: &SettingsPatch) -> Result<Settings> {
             params![path, now],
         )?;
     }
+    if let Some(url) = &patch.obsidian_rest_url {
+        // An empty string disconnects: the URL and the credential marker clear
+        // together (the key itself is removed from the keychain by the caller).
+        let value = (!url.trim().is_empty()).then(|| url.trim().to_string());
+        conn.execute(
+            "UPDATE settings SET obsidian_rest_url = ?1,
+                    obsidian_rest_credential_ref = CASE WHEN ?1 IS NULL THEN NULL
+                                                        ELSE obsidian_rest_credential_ref END,
+                    updated_at = ?2
+             WHERE id = 1",
+            params![value, now],
+        )?;
+    }
     if let Some(accepted) = patch.network_notice_accepted {
         let value = accepted.then(|| now.clone());
         conn.execute(
@@ -184,6 +205,20 @@ pub fn set_credential_ref(
         }
     };
     conn.execute(sql, params![credential_ref, now])?;
+    Ok(())
+}
+
+/// Marks (or clears) the Obsidian REST key's presence. Only a reference — the
+/// key itself lives in the OS credential store (§16.1).
+pub fn set_obsidian_rest_credential_ref(
+    conn: &Connection,
+    credential_ref: Option<&str>,
+) -> Result<()> {
+    ensure_row(conn)?;
+    conn.execute(
+        "UPDATE settings SET obsidian_rest_credential_ref = ?1, updated_at = ?2 WHERE id = 1",
+        params![credential_ref, now_iso8601()],
+    )?;
     Ok(())
 }
 

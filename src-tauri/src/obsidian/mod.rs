@@ -1,4 +1,5 @@
 pub mod note;
+pub mod rest;
 pub mod watch;
 
 use std::path::{Path, PathBuf};
@@ -22,12 +23,13 @@ pub const SYNC_STATUS: &str = "sync://status";
 pub async fn sync_paper(app: &AppHandle, paper_id: &str) -> Result<()> {
     let state = app.state::<AppState>();
 
-    let (vault, paper, markdown, related) = {
+    let (vault, rest_config, paper, markdown, related) = {
         let conn = state.db.conn();
 
         let vault = settings_repo::get(&conn)?
             .obsidian_vault_path
             .ok_or_else(|| AppError::NotFound("no obsidian vault configured".into()))?;
+        let rest_config = rest::load(&conn)?;
 
         let paper = paper_repo::get(&conn, paper_id)?;
         let markdown: Option<String> = conn
@@ -39,7 +41,7 @@ pub async fn sync_paper(app: &AppHandle, paper_id: &str) -> Result<()> {
             .optional()?;
         let related = relations::related_titles(&conn, paper_id)?;
 
-        (PathBuf::from(vault), paper, markdown, related)
+        (PathBuf::from(vault), rest_config, paper, markdown, related)
     };
 
     let Some(markdown) = markdown else {
@@ -63,7 +65,7 @@ pub async fn sync_paper(app: &AppHandle, paper_id: &str) -> Result<()> {
         None => render_new(&paper, &markdown, &related),
     };
 
-    write_atomically(&note_path, &merged)?;
+    vault_put(rest_config.as_ref(), &vault, &note_path, &merged).await?;
     copy_attachment(&state.paths.paper_dir(paper_id), &attachments_dir, paper_id)?;
 
     {
@@ -242,16 +244,17 @@ fn escape(value: &str) -> String {
 /// linking related topics and member papers with `[[wiki links]]` so Obsidian's
 /// Graph View renders the concept map. Fully Bbrain-managed and regenerated on
 /// each export (§13). Returns how many topic notes were written.
-pub fn export_topic_graph(app: &AppHandle) -> Result<usize> {
+pub async fn export_topic_graph(app: &AppHandle) -> Result<usize> {
     use std::collections::HashMap;
 
     let state = app.state::<AppState>();
-    let (vault, graph) = {
+    let (vault, rest_config, graph) = {
         let conn = state.db.conn();
         let vault = settings_repo::get(&conn)?.obsidian_vault_path.ok_or_else(|| {
             AppError::VaultUnavailable("Obsidian 보관함이 설정되지 않았습니다.".into())
         })?;
-        (vault, crate::topics::load_topic_graph(&conn)?)
+        let rest_config = rest::load(&conn)?;
+        (vault, rest_config, crate::topics::load_topic_graph(&conn)?)
     };
 
     if graph.nodes.is_empty() {
@@ -311,7 +314,7 @@ pub fn export_topic_graph(app: &AppHandle) -> Result<usize> {
 
         let note = format!("{MANAGED_START}\n{body}{MANAGED_END}\n");
         let path = topics_dir.join(format!("{}.md", safe_file_name(&node.label)));
-        write_atomically(&path, &note)?;
+        vault_put(rest_config.as_ref(), Path::new(&vault), &path, &note).await?;
         written += 1;
     }
 
@@ -360,6 +363,31 @@ pub fn safe_file_name(title: &str) -> String {
     } else {
         truncated.trim().to_string()
     }
+}
+
+/// Writes one vault note, preferring the Obsidian Local REST API when it is
+/// configured and answering (a running Obsidian then applies and re-indexes
+/// the change immediately), and falling back to the direct atomic file write
+/// otherwise. `abs_path` must live under `vault`; the REST path is the
+/// vault-relative remainder.
+async fn vault_put(
+    rest: Option<&rest::RestConfig>,
+    vault: &Path,
+    abs_path: &Path,
+    content: &str,
+) -> Result<()> {
+    if let Some(config) = rest {
+        if let Ok(rel) = abs_path.strip_prefix(vault) {
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            match rest::put_note(config, &rel, content).await {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    tracing::warn!(%error, "obsidian rest write failed; falling back to file");
+                }
+            }
+        }
+    }
+    write_atomically(abs_path, content)
 }
 
 fn write_atomically(path: &Path, content: &str) -> Result<()> {

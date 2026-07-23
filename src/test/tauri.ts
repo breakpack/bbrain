@@ -73,6 +73,8 @@ export function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     translationLanguage: "ko",
     translationEngine: "google",
     obsidianVaultPath: null,
+    obsidianRestUrl: null,
+    hasObsidianRestKey: false,
     embeddingModelId: "intfloat/multilingual-e5-small",
     embeddingDimension: 384,
     indexGeneration: 1,

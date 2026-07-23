@@ -194,6 +194,8 @@ mod tests {
             translation_language: "ko".into(),
             translation_engine: "google".into(),
             obsidian_vault_path: None,
+            obsidian_rest_url: None,
+            has_obsidian_rest_key: false,
             embedding_model_id: "intfloat/multilingual-e5-small".into(),
             embedding_dimension: 384,
             index_generation: 1,
