@@ -1,0 +1,68 @@
+# Personal-use release: build unsigned macOS (.dmg) and Windows (.exe NSIS)
+# bundles and attach them to a draft GitHub Release whenever a v* tag is pushed.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# No code signing / notarization — this app is distributed to its author only.
+# On macOS run `xattr -cr /Applications/Bbrain.app` once after installing; on
+# Windows click through SmartScreen ("추가 정보" → "실행"). See docs/release.md.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest # Apple Silicon
+            args: ""
+          - platform: windows-latest
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        run: |
+          pnpm typecheck
+          pnpm test
+          cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Bbrain ${{ github.ref_name }}"
+          releaseBody: "개인용 빌드. 설치 방법은 docs/release.md 참고."
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
