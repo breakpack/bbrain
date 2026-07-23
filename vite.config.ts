@@ -32,5 +32,9 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
+    // The pdf.js fixture tests load and render real PDFs; slow CI runners
+    // (notably the shared macOS ones) blow the 5s default while passing
+    // comfortably everywhere else. Passing tests are unaffected by the cap.
+    testTimeout: 30_000,
   },
 });
