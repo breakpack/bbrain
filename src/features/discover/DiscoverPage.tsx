@@ -1,4 +1,4 @@
-import { BookOpen, ExternalLink, Quote, Search } from "lucide-react";
+import { BookOpen, Compass, ExternalLink, Quote, Search } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/Button";
@@ -16,7 +16,30 @@ const PAGE_SIZE = 20;
  * The network and the source live in the Rust core (api.searchPapers /
  * api.importDiscoveredPaper); this page only drives the search and renders it.
  */
+/** Set to false to re-enable the search UI below. The Semantic Scholar shared
+ * pool rate-limits too aggressively for a reliable v0.1 experience, so the
+ * page ships as "준비 중" until an API-key path (or backoff) lands. */
+const COMING_SOON = true;
+
 export function DiscoverPage({ onOpenPaper }: { onOpenPaper: (paperId: string) => void }) {
+  if (COMING_SOON) return <ComingSoon />;
+  return <DiscoverSearch onOpenPaper={onOpenPaper} />;
+}
+
+function ComingSoon() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-md p-xl text-center">
+      <Compass aria-hidden className="h-10 w-10 text-ink-body" />
+      <h1 className="text-subheading text-ink-heading">준비 중인 기능입니다</h1>
+      <p className="max-w-[420px] text-caption text-ink-body">
+        주제로 논문을 찾아 바로 가져오는 기능을 다듬고 있습니다. 지금은 PDF를
+        라이브러리로 직접 가져와 주세요.
+      </p>
+    </div>
+  );
+}
+
+function DiscoverSearch({ onOpenPaper }: { onOpenPaper: (paperId: string) => void }) {
   const [input, setInput] = useState("");
   const [submitted, setSubmitted] = useState("");
   const [openAccessOnly, setOpenAccessOnly] = useState(false);

@@ -29,7 +29,18 @@ async function submitSearch(term = "attention") {
   await userEvent.click(screen.getByRole("button", { name: "검색" }));
 }
 
-describe("discover", () => {
+describe("discover coming-soon gate", () => {
+  it("shows the 준비 중 notice instead of the search UI", () => {
+    renderWithQuery(<DiscoverPage onOpenPaper={() => {}} />);
+
+    expect(screen.getByText("준비 중인 기능입니다")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /검색/ })).not.toBeInTheDocument();
+  });
+});
+
+// The search UI is gated behind COMING_SOON (Semantic Scholar shared-pool rate
+// limits) — these specs describe the real feature and come back with it.
+describe.skip("discover", () => {
   beforeEach(() => {
     invokeMock.mockReset();
   });
