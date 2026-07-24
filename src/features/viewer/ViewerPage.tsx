@@ -37,8 +37,9 @@ const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 /** Continuous zoom bounds for trackpad pinch (the step buttons stay discrete). */
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 4;
-const PANEL_MIN = 320;
-const PANEL_MAX = 520;
+const PANEL_MIN = 280;
+const PANEL_MAX = 720;
+const PANEL_DEFAULT = 380;
 /** Resizable thumbnail rail bounds. */
 const RAIL_MIN = 110;
 const RAIL_MAX = 340;
@@ -65,7 +66,15 @@ export function ViewerPage({
   const [scale, setScale] = useState(1);
   const [currentPage, setCurrentPage] = useState(1);
   const [tab, setTab] = useState<Tab>("translation");
-  const [panelWidth, setPanelWidth] = useState(380);
+  const [panelWidth, setPanelWidth] = useState(() => {
+    const stored = Number(localStorage.getItem("bbrain.viewer.panelWidth"));
+    return Number.isFinite(stored) && stored >= PANEL_MIN && stored <= PANEL_MAX
+      ? stored
+      : PANEL_DEFAULT;
+  });
+  useEffect(() => {
+    localStorage.setItem("bbrain.viewer.panelWidth", String(panelWidth));
+  }, [panelWidth]);
   const [railWidth, setRailWidth] = useState(RAIL_DEFAULT);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [pages, setPages] = useState<PDFPageProxy[]>([]);
@@ -1003,11 +1012,17 @@ function PanelResizer({
   useEffect(() => {
     const onMove = (event: MouseEvent) => {
       if (!dragging.current) return;
+      // Without this the drag also sweeps a text selection through the panel,
+      // which reads as the resizer "not working" — especially on Windows.
+      event.preventDefault();
       const next = window.innerWidth - event.clientX;
       onResize(Math.min(PANEL_MAX, Math.max(PANEL_MIN, next)));
     };
     const onUp = () => {
+      if (!dragging.current) return;
       dragging.current = false;
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
     };
 
     window.addEventListener("mousemove", onMove);
@@ -1015,10 +1030,14 @@ function PanelResizer({
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
     };
   }, [onResize]);
 
   return (
+    // A 6px hit strip with an always-visible center line, so the handle is
+    // discoverable; the previous 1px strip was invisible until hovered.
     <div
       role="separator"
       aria-orientation="vertical"
@@ -1027,14 +1046,21 @@ function PanelResizer({
       aria-valuemin={PANEL_MIN}
       aria-valuemax={PANEL_MAX}
       tabIndex={0}
-      onMouseDown={() => {
+      title="드래그하여 패널 너비 조절 · 더블클릭으로 기본 너비"
+      onMouseDown={(event) => {
+        event.preventDefault();
         dragging.current = true;
+        document.body.style.userSelect = "none";
+        document.body.style.cursor = "col-resize";
       }}
+      onDoubleClick={() => onResize(PANEL_DEFAULT)}
       onKeyDown={(event) => {
         if (event.key === "ArrowLeft") onResize(Math.min(PANEL_MAX, width + 20));
         if (event.key === "ArrowRight") onResize(Math.max(PANEL_MIN, width - 20));
       }}
-      className="absolute left-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/30"
-    />
+      className="group/resizer absolute left-0 top-0 z-10 flex h-full w-[6px] -translate-x-[3px] cursor-col-resize items-stretch justify-center focus-visible:outline-none"
+    >
+      <div className="w-[2px] bg-line transition-colors duration-fast group-hover/resizer:bg-primary group-focus-visible/resizer:bg-primary" />
+    </div>
   );
 }
