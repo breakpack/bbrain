@@ -479,6 +479,7 @@ mod tests {
             limitations: vec![],
             keywords: keywords.iter().map(|s| s.to_string()).collect(),
             suggested_tags: tags.iter().map(|s| s.to_string()).collect(),
+            tag_insights: vec![],
             follow_up_questions: vec![],
         }
     }

@@ -51,6 +51,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "analysis_language",
         sql: include_str!("../../migrations/0008_analysis_language.sql"),
     },
+    Migration {
+        version: 9,
+        name: "tag_note_entries",
+        sql: include_str!("../../migrations/0009_tag_note_entries.sql"),
+    },
 ];
 
 pub fn current_version(conn: &Connection) -> Result<i64> {
@@ -155,6 +160,7 @@ mod tests {
             "settings",
             "papers_fts",
             "chunks_fts",
+            "tag_note_entries",
         ] {
             let found: i64 = conn
                 .query_row(

@@ -21,6 +21,20 @@ pub struct Finding {
     pub evidence_pages: Vec<i64>,
 }
 
+/// One suggested tag explained in this paper's own terms — the unit that
+/// accumulates on the tag's concept note (the "second brain" node).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagInsight {
+    /// Must match an entry of `suggested_tags` (same spelling).
+    pub tag: String,
+    /// 1–3 sentences: what the concept is, and what it means / how it is used
+    /// in THIS paper specifically.
+    pub insight: String,
+    #[serde(default)]
+    pub evidence_pages: Vec<i64>,
+}
+
 /// `PaperAnalysisV1` from DEVELOPMENT.md §10.3. Provider output is validated
 /// against this before it is stored; the Markdown is then rendered from the
 /// validated JSON, never taken from the model.
@@ -37,6 +51,9 @@ pub struct PaperAnalysisV1 {
     pub limitations: Vec<String>,
     pub keywords: Vec<String>,
     pub suggested_tags: Vec<String>,
+    /// default: analyses stored before tag insights existed load unchanged.
+    #[serde(default)]
+    pub tag_insights: Vec<TagInsight>,
     pub follow_up_questions: Vec<String>,
 }
 
@@ -53,7 +70,7 @@ pub fn json_schema() -> serde_json::Value {
         "required": [
             "schemaVersion", "shortSummary", "detailedSummary", "researchProblem",
             "contributions", "methodology", "results", "limitations", "keywords",
-            "suggestedTags", "followUpQuestions"
+            "suggestedTags", "tagInsights", "followUpQuestions"
         ],
         "properties": {
             "schemaVersion": { "type": "string", "enum": ["1"] },
@@ -88,6 +105,19 @@ pub fn json_schema() -> serde_json::Value {
             "limitations": string_array,
             "keywords": string_array,
             "suggestedTags": string_array,
+            "tagInsights": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["tag", "insight", "evidencePages"],
+                    "properties": {
+                        "tag": { "type": "string" },
+                        "insight": { "type": "string" },
+                        "evidencePages": pages,
+                    }
+                }
+            },
             "followUpQuestions": string_array,
         }
     })
@@ -127,6 +157,25 @@ pub fn validate(value: serde_json::Value, page_count: i64) -> Result<PaperAnalys
     analysis.suggested_tags.retain(|tag| !tag.trim().is_empty());
     analysis.keywords.retain(|keyword| !keyword.trim().is_empty());
 
+    // Tag insights feed the concept notes: drop blanks, clamp evidence, and
+    // make sure every explained tag is also a suggested tag (the note is keyed
+    // by the tag row the analysis creates).
+    analysis
+        .tag_insights
+        .retain(|item| !item.tag.trim().is_empty() && !item.insight.trim().is_empty());
+    for item in &mut analysis.tag_insights {
+        item.evidence_pages.retain(in_range);
+        item.evidence_pages.sort_unstable();
+        item.evidence_pages.dedup();
+        if !analysis
+            .suggested_tags
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(&item.tag))
+        {
+            analysis.suggested_tags.push(item.tag.clone());
+        }
+    }
+
     Ok(analysis)
 }
 
@@ -146,6 +195,11 @@ mod tests {
             "limitations": ["한계"],
             "keywords": ["rag", ""],
             "suggestedTags": ["retrieval", "  "],
+            "tagInsights": [
+                { "tag": "retrieval", "insight": "이 논문에서 검색은 ...를 뜻한다.", "evidencePages": [3, 99] },
+                { "tag": "Attention", "insight": "태그 목록에 없던 개념도 태그로 승격된다.", "evidencePages": [] },
+                { "tag": " ", "insight": "빈 태그는 버려진다.", "evidencePages": [] }
+            ],
             "followUpQuestions": ["다음 질문"]
         })
     }
@@ -171,7 +225,8 @@ mod tests {
         let analysis = validate(payload(), 10).unwrap();
 
         assert_eq!(analysis.keywords, vec!["rag"]);
-        assert_eq!(analysis.suggested_tags, vec!["retrieval"]);
+        // "Attention" joins via tag-insight promotion (see the insights test).
+        assert_eq!(analysis.suggested_tags, vec!["retrieval", "Attention"]);
     }
 
     #[test]
@@ -204,6 +259,28 @@ mod tests {
         let schema = json_schema();
 
         assert_eq!(schema["additionalProperties"], json!(false));
-        assert_eq!(schema["required"].as_array().unwrap().len(), 11);
+        assert_eq!(schema["required"].as_array().unwrap().len(), 12);
+    }
+
+    #[test]
+    fn tag_insights_are_cleaned_and_promoted_into_suggested_tags() {
+        let analysis = validate(payload(), 10).unwrap();
+
+        // Blank tag dropped; out-of-range evidence page dropped.
+        assert_eq!(analysis.tag_insights.len(), 2);
+        assert_eq!(analysis.tag_insights[0].evidence_pages, vec![3]);
+        // An insight for a tag missing from suggestedTags promotes that tag,
+        // so its concept-note entry always has a tag row to attach to.
+        assert!(analysis.suggested_tags.iter().any(|t| t == "Attention"));
+    }
+
+    #[test]
+    fn an_analysis_stored_before_tag_insights_still_loads() {
+        let mut old = payload();
+        old.as_object_mut().unwrap().remove("tagInsights");
+
+        // serde default: stored analyses predating the field parse unchanged.
+        let analysis: PaperAnalysisV1 = serde_json::from_value(old).unwrap();
+        assert!(analysis.tag_insights.is_empty());
     }
 }

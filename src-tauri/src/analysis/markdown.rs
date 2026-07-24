@@ -184,6 +184,7 @@ mod tests {
             limitations: vec!["긴 문서에서 계산량이 증가한다".into()],
             keywords: vec!["attention".into()],
             suggested_tags: vec!["neural machine translation".into()],
+            tag_insights: vec![],
             follow_up_questions: vec!["더 긴 문맥에서도 성립하는가?".into()],
         }
     }
