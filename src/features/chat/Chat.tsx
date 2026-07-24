@@ -15,10 +15,90 @@ import type {
   StoredMessage,
 } from "@/lib/types";
 
+/** Anchor of the floating chat, as offsets from the bottom-right corner —
+ * stable under window resizes. Shared by the button and the open panel. */
+type ChatAnchor = { right: number; bottom: number };
+
+const CHAT_ANCHOR_KEY = "bbrain.chat.anchor";
+const CHAT_ANCHOR_DEFAULT: ChatAnchor = { right: 24, bottom: 24 };
+const PANEL_W = 380;
+
 /**
- * Floating chat: 48×48 button 24px from the bottom-right, opening into a
- * ~380×560 panel that expands upward (DEVELOPMENT.md §11.3). Collapsing keeps
- * the session.
+ * The launcher is draggable: press-and-move relocates it (5px threshold keeps
+ * plain clicks opening the chat), and the open panel anchors to the same spot,
+ * clamped so it stays on screen. The position persists across sessions.
+ */
+function useChatAnchor() {
+  const [anchor, setAnchor] = useState<ChatAnchor>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(CHAT_ANCHOR_KEY) ?? "");
+      if (typeof stored?.right === "number" && typeof stored?.bottom === "number") {
+        return stored as ChatAnchor;
+      }
+    } catch {
+      // Corrupt or missing — fall through to the default corner.
+    }
+    return CHAT_ANCHOR_DEFAULT;
+  });
+  useEffect(() => {
+    localStorage.setItem(CHAT_ANCHOR_KEY, JSON.stringify(anchor));
+  }, [anchor]);
+
+  const dragged = useRef(false);
+
+  const onDragStart = useCallback((event: React.MouseEvent) => {
+    if (event.button !== 0) return;
+    const originX = event.clientX;
+    const originY = event.clientY;
+    dragged.current = false;
+
+    const onMove = (move: MouseEvent) => {
+      if (
+        !dragged.current &&
+        Math.hypot(move.clientX - originX, move.clientY - originY) < 5
+      ) {
+        return;
+      }
+      dragged.current = true;
+      document.body.style.userSelect = "none";
+      // The cursor stays at the button's centre while dragging.
+      setAnchor({
+        right: Math.max(8, Math.min(window.innerWidth - 56, window.innerWidth - move.clientX - 24)),
+        bottom: Math.max(8, Math.min(window.innerHeight - 56, window.innerHeight - move.clientY - 24)),
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      // dragged stays set until the click that follows this mouseup, so the
+      // click handler can tell a drop from a plain click.
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, []);
+
+  /** True exactly once for the click that ends a drag. */
+  const consumeDrag = useCallback(() => {
+    const was = dragged.current;
+    dragged.current = false;
+    return was;
+  }, []);
+
+  /** The open panel shares the anchor but must fit on screen. */
+  const panelStyle = {
+    right: Math.min(anchor.right, Math.max(8, window.innerWidth - PANEL_W - 8)),
+    bottom: Math.min(anchor.bottom, Math.max(8, window.innerHeight - 200)),
+  };
+
+  return { anchor, panelStyle, onDragStart, consumeDrag };
+}
+
+/**
+ * Floating chat: 48×48 button, by default 24px from the bottom-right, opening
+ * into a ~380×560 panel that expands upward (DEVELOPMENT.md §11.3). The
+ * launcher can be dragged anywhere; the panel follows. Collapsing keeps the
+ * session.
  */
 export function Chat({
   scope,
@@ -28,6 +108,7 @@ export function Chat({
   onOpenCitation?: (paperId: string, pageNumber: number) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const { anchor, panelStyle, onDragStart, consumeDrag } = useChatAnchor();
   const [question, setQuestion] = useState("");
   const [streaming, setStreaming] = useState<{ requestId: string; text: string } | null>(
     null,
@@ -135,9 +216,14 @@ export function Chat({
     return (
       <button
         aria-label="AI에게 질문하기"
-        onClick={() => setOpen(true)}
+        title="AI에게 질문하기 · 드래그하여 위치 이동"
+        onMouseDown={onDragStart}
+        onClick={() => {
+          if (!consumeDrag()) setOpen(true);
+        }}
+        style={{ right: anchor.right, bottom: anchor.bottom }}
         className={cn(
-          "fixed bottom-[24px] right-[24px] z-30 flex h-12 w-12 items-center justify-center",
+          "fixed z-30 flex h-12 w-12 cursor-grab items-center justify-center",
           "rounded-control bg-primary text-on-primary shadow-card",
           "transition-colors duration-fast ease-standard hover:bg-primary-hover",
         )}
@@ -150,17 +236,22 @@ export function Chat({
   return (
     <section
       aria-label="AI 대화"
+      style={panelStyle}
       className={cn(
-        "fixed bottom-[24px] right-[24px] z-30 flex w-[380px] flex-col",
+        "fixed z-30 flex w-[380px] flex-col",
         "h-[560px] max-h-[calc(100vh-48px)] rounded-card border border-line bg-canvas shadow-card",
       )}
     >
-      <header className="flex items-center justify-between gap-md border-b border-line px-md py-sm">
+      <header
+        onMouseDown={onDragStart}
+        className="flex cursor-grab items-center justify-between gap-md border-b border-line px-md py-sm"
+      >
         <h2 className="text-caption font-bold text-ink-heading">
           {scope.type === "paper" ? "이 논문에 질문" : "라이브러리 전체에 질문"}
         </h2>
         <button
           aria-label="대화 닫기"
+          onMouseDown={(event) => event.stopPropagation()}
           onClick={() => setOpen(false)}
           className="rounded-sm p-1 text-ink-body hover:text-ink"
         >

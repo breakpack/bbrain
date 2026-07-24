@@ -1035,9 +1035,8 @@ function PanelResizer({
     };
   }, [onResize]);
 
+  // Same look and feel as the thumbnail rail's handle on the opposite edge.
   return (
-    // A 6px hit strip with an always-visible center line, so the handle is
-    // discoverable; the previous 1px strip was invisible until hovered.
     <div
       role="separator"
       aria-orientation="vertical"
@@ -1046,21 +1045,17 @@ function PanelResizer({
       aria-valuemin={PANEL_MIN}
       aria-valuemax={PANEL_MAX}
       tabIndex={0}
-      title="드래그하여 패널 너비 조절 · 더블클릭으로 기본 너비"
       onMouseDown={(event) => {
         event.preventDefault();
         dragging.current = true;
         document.body.style.userSelect = "none";
         document.body.style.cursor = "col-resize";
       }}
-      onDoubleClick={() => onResize(PANEL_DEFAULT)}
       onKeyDown={(event) => {
         if (event.key === "ArrowLeft") onResize(Math.min(PANEL_MAX, width + 20));
         if (event.key === "ArrowRight") onResize(Math.max(PANEL_MIN, width - 20));
       }}
-      className="group/resizer absolute left-0 top-0 z-10 flex h-full w-[6px] -translate-x-[3px] cursor-col-resize items-stretch justify-center focus-visible:outline-none"
-    >
-      <div className="w-[2px] bg-line transition-colors duration-fast group-hover/resizer:bg-primary group-focus-visible/resizer:bg-primary" />
-    </div>
+      className="absolute left-0 top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-primary/30"
+    />
   );
 }
