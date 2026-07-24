@@ -305,9 +305,16 @@ pub async fn export_topic_graph(app: &AppHandle) -> Result<usize> {
 
         if !node.papers.is_empty() {
             body.push_str("## 논문\n");
+            let vault_name = Path::new(&vault)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
             for paper in &node.papers {
                 let short: String = paper.id.chars().take(8).collect();
-                body.push_str(&format!("- [[{}-{}]]\n", safe_file_name(&paper.title), short));
+                body.push_str(&format!(
+                    "- {}\n",
+                    topic_paper_link(&vault_name, &paper.title, &short)
+                ));
             }
             body.push('\n');
         }
@@ -320,6 +327,20 @@ pub async fn export_topic_graph(app: &AppHandle) -> Result<usize> {
 
     let _ = app.emit(SYNC_STATUS, ());
     Ok(written)
+}
+
+/// Link from a topic note to a paper note as an `obsidian://` URL, NOT a wiki
+/// link: URL links carry no Graph View edge, so the graph shows only the
+/// topic↔topic concept map while the paper stays one click away.
+pub fn topic_paper_link(vault_name: &str, title: &str, short_id: &str) -> String {
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+    let file = format!("Bbrain/Papers/{}-{}", safe_file_name(title), short_id);
+    format!(
+        "[{}](obsidian://open?vault={}&file={})",
+        sanitize_link(title),
+        utf8_percent_encode(vault_name, NON_ALPHANUMERIC),
+        utf8_percent_encode(&file, NON_ALPHANUMERIC),
+    )
 }
 
 pub fn sanitize_link(title: &str) -> String {
@@ -595,6 +616,17 @@ Bbrain이 모르는 내용.
     #[test]
     fn wiki_links_drop_characters_obsidian_treats_as_syntax() {
         assert_eq!(sanitize_link("A [[B]] | C"), "A B C");
+    }
+
+    /// Topic→paper links must not be wiki links: a wiki link puts an edge in
+    /// Obsidian's Graph View, and the graph should show only the topic map.
+    #[test]
+    fn topic_paper_links_are_urls_that_carry_no_graph_edge() {
+        let link = topic_paper_link("내 보관함", "Attention Is All You Need", "019f8d48");
+
+        assert!(link.starts_with("[Attention Is All You Need](obsidian://open?vault="));
+        assert!(link.contains("Bbrain%2FPapers%2FAttention"));
+        assert!(!link.contains("[["), "a wiki link would add a graph edge");
     }
 
     #[test]

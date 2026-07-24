@@ -247,36 +247,13 @@ export function TranslationTab({
             <p>{translated.units.map(renderUnit)}</p>
           ) : (
             <div className="flex flex-col gap-md">
-              {annotateColumns(
-                groupByParagraph(translated.units),
-                (group) => rectsFor(group.flatMap((unit) => unit.sentenceIds)),
-              ).map(({ group, divider }) => (
-                <div key={group[0].id} className="flex flex-col gap-md">
-                  {divider && <ColumnDivider side={divider} />}
-                  <p>{group.map(renderUnit)}</p>
-                </div>
+              {groupByParagraph(translated.units).map((group) => (
+                <p key={group[0].id}>{group.map(renderUnit)}</p>
               ))}
             </div>
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-const COLUMN_LABEL: Record<"left" | "right", string> = {
-  left: "왼쪽 단",
-  right: "오른쪽 단",
-};
-
-/** A labelled rule marking where the translation crosses into the other
- * column of a two-column page — without it the panel reads as one stream. */
-function ColumnDivider({ side }: { side: "left" | "right" }) {
-  return (
-    <div className="flex items-center gap-2 text-[11px] text-ink-body" role="separator">
-      <span aria-hidden className="h-px flex-1 bg-line" />
-      {COLUMN_LABEL[side]}
-      <span aria-hidden className="h-px flex-1 bg-line" />
     </div>
   );
 }
@@ -295,45 +272,3 @@ function groupByParagraph(units: TranslatedUnit[]): TranslatedUnit[][] {
   return groups;
 }
 
-export type ColumnSide = "left" | "right" | "full";
-
-/**
- * Which column of the page a set of source rectangles occupies. A run wider
- * than ~55% of the page spans the gutter (title, abstract, figures) and counts
- * as full-width; otherwise its horizontal centre decides the side.
- */
-export function columnOf(rects: NormalizedRect[]): ColumnSide {
-  if (rects.length === 0) return "full";
-  let left = Infinity;
-  let right = -Infinity;
-  for (const rect of rects) {
-    left = Math.min(left, rect.x);
-    right = Math.max(right, rect.x + rect.width);
-  }
-  if (right - left > 0.55) return "full";
-  return (left + right) / 2 < 0.5 ? "left" : "right";
-}
-
-/**
- * Marks each paragraph group with the divider to draw before it: on pages that
- * really have both columns, every left↔right transition gets one. Single-column
- * pages get none, and full-width runs never break the current column.
- */
-export function annotateColumns<T>(
-  groups: T[],
-  rectsOf: (group: T) => NormalizedRect[],
-): Array<{ group: T; divider: "left" | "right" | null }> {
-  const sides = groups.map((group) => columnOf(rectsOf(group)));
-  const twoColumn = sides.includes("left") && sides.includes("right");
-
-  let current: "left" | "right" | null = null;
-  return groups.map((group, index) => {
-    const side = sides[index];
-    let divider: "left" | "right" | null = null;
-    if (twoColumn && (side === "left" || side === "right")) {
-      if (current !== null && side !== current) divider = side;
-      current = side;
-    }
-    return { group, divider };
-  });
-}

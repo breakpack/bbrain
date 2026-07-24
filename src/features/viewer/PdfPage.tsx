@@ -193,7 +193,9 @@ export function PdfPage({
           )),
         )}
 
-        {sourceRects.map((rect, index) => (
+        {/* Clipped like the drag selection and saved highlights: a sentence
+            bar must never reach past the glyphs into the margin or gutter. */}
+        {clipRectsToGlyphs(sourceRects, glyphs).map((rect, index) => (
           <span
             key={`source-${index}`}
             className={cn(

@@ -213,23 +213,64 @@ function detectColumnGutter(items: ExtractedItem[]): number | null {
  * column's lines followed by the right column's, each grouped independently so
  * same-baseline items from different columns never merge.
  */
-function readingColumns(items: ExtractedItem[]): Line[][] {
-  const gutter = detectColumnGutter(items);
-  if (gutter === null) {
-    return [groupIntoLines(items)];
-  }
+/** Bottom band that may hold footnote/imprint text (normalized page y). */
+const FOOTNOTE_BAND_TOP = 0.88;
+/** Footnote text is set visibly smaller than the body. */
+const FOOTNOTE_FONT_RATIO = 0.85;
 
-  const left: ExtractedItem[] = [];
-  const right: ExtractedItem[] = [];
+/**
+ * Splits off the small-print block at the very bottom of the page — contact
+ * lines, license/imprint notices, footnotes. Geometrically those sit at the end
+ * of a column, so without this they interrupt the reading order between the
+ * columns ("...body, CONTACT, ©2021, keywords, body...") and the translation
+ * reads as if the columns were shuffled. Both conditions must hold: inside the
+ * bottom band AND set smaller than the body median, so a body paragraph that
+ * merely reaches the page bottom stays in place (§9.3).
+ */
+export function splitFootnoteBand(items: ExtractedItem[]): {
+  body: ExtractedItem[];
+  footnotes: ExtractedItem[];
+} {
+  const heights = items
+    .filter((item) => !isBlank(item))
+    .map((item) => item.rect.height)
+    .sort((a, b) => a - b);
+  if (heights.length === 0) return { body: items, footnotes: [] };
+  const median = heights[Math.floor(heights.length / 2)];
+
+  const body: ExtractedItem[] = [];
+  const footnotes: ExtractedItem[] = [];
   for (const item of items) {
-    // A blank filler item straddling the gutter belongs to neither column.
-    if (isBlank(item)) continue;
-    // Assign by left edge (width-independent): a left-column line starts before
-    // the gutter, a right-column line at or after it.
-    (item.rect.x < gutter ? left : right).push(item);
+    const small = item.rect.height < median * FOOTNOTE_FONT_RATIO;
+    (item.rect.y >= FOOTNOTE_BAND_TOP && small ? footnotes : body).push(item);
+  }
+  return { body, footnotes };
+}
+
+function readingColumns(items: ExtractedItem[]): Line[][] {
+  // Footnotes leave the flow before column detection, and rejoin at the very
+  // end of the page so the body columns read continuously.
+  const { body, footnotes } = splitFootnoteBand(items);
+
+  const gutter = detectColumnGutter(body);
+  const columns: Line[][] = [];
+  if (gutter === null) {
+    columns.push(groupIntoLines(body));
+  } else {
+    const left: ExtractedItem[] = [];
+    const right: ExtractedItem[] = [];
+    for (const item of body) {
+      // A blank filler item straddling the gutter belongs to neither column.
+      if (isBlank(item)) continue;
+      // Assign by left edge (width-independent): a left-column line starts
+      // before the gutter, a right-column line at or after it.
+      (item.rect.x < gutter ? left : right).push(item);
+    }
+    columns.push(groupIntoLines(left), groupIntoLines(right));
   }
 
-  return [groupIntoLines(left), groupIntoLines(right)];
+  if (footnotes.length > 0) columns.push(groupIntoLines(footnotes));
+  return columns;
 }
 
 /**

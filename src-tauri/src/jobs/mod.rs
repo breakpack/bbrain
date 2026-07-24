@@ -11,11 +11,12 @@ pub use runner::JobRunner;
 
 /// Bump when a step's output format changes, so existing papers re-run it
 /// instead of being skipped by the idempotency key.
-pub const EXTRACT_VERSION: &str = "5";
+// 6: footnote/imprint band moves to the end of the page's reading order.
+pub const EXTRACT_VERSION: &str = "6";
 pub const THUMBNAIL_VERSION: &str = "1";
 // Bumped with EXTRACT: a re-extraction that fixes the reading order must also
 // refresh the embeddings built from that text.
-pub const EMBED_VERSION: &str = "4";
+pub const EMBED_VERSION: &str = "5";
 pub const ANALYZE_VERSION: &str = "1";
 pub const RELATIONS_VERSION: &str = "1";
 pub const OBSIDIAN_VERSION: &str = "1";

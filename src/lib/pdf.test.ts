@@ -15,6 +15,7 @@ import {
   selectionToRects,
   setTextLayerGeometry,
   splitAroundWord,
+  splitFootnoteBand,
   splitSentenceRanges,
   subtractRect,
   wordAtPoint,
@@ -543,6 +544,53 @@ describe("paragraph grouping", () => {
     ]);
 
     expect(texts(groups)).toEqual(["제목 없는 소제목", "본문 문장이 시작됩니다."]);
+  });
+});
+
+describe("footnote band", () => {
+  const item = (text: string, y: number, height: number): ExtractedItem => ({
+    text,
+    rect: { x: 0.06, y, width: 0.4, height },
+    hasEOL: false,
+    baseline: y * 800,
+    heightPt: height * 800,
+    left: 0.06,
+  });
+
+  it("moves small print at the page bottom out of the body", () => {
+    // Body text at 0.0126 height, imprint lines at ≤0.0101 below y 0.9 —
+    // measured from a real journal page whose reading order interleaved
+    // "...body, CONTACT, ©, keywords, body...".
+    const { body, footnotes } = splitFootnoteBand([
+      item("본문 첫 문단.", 0.2, 0.0126),
+      item("본문 둘째 문단.", 0.4, 0.0126),
+      item("본문 셋째 문단.", 0.6, 0.0126),
+      item("본문 마지막 문단.", 0.85, 0.0126),
+      item("CONTACT author@university.edu", 0.9, 0.0101),
+      item("© 2021 The Author(s).", 0.93, 0.0088),
+    ]);
+
+    expect(body.map((i) => i.text)).toEqual([
+      "본문 첫 문단.",
+      "본문 둘째 문단.",
+      "본문 셋째 문단.",
+      "본문 마지막 문단.",
+    ]);
+    expect(footnotes.map((i) => i.text)).toEqual([
+      "CONTACT author@university.edu",
+      "© 2021 The Author(s).",
+    ]);
+  });
+
+  it("keeps a body paragraph that merely reaches the page bottom", () => {
+    // Same y band, but full body size — must stay in the flow.
+    const { body, footnotes } = splitFootnoteBand([
+      item("본문 첫 줄.", 0.5, 0.0126),
+      item("본문이 페이지 바닥까지 이어진다.", 0.9, 0.0126),
+    ]);
+
+    expect(body).toHaveLength(2);
+    expect(footnotes).toHaveLength(0);
   });
 });
 
