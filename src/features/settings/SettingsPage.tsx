@@ -22,6 +22,12 @@ const LANGUAGES = [
   { value: "en", label: "English" },
 ];
 
+/** AI 정리(논문 분석) 출력 언어 — 기본 한국어. */
+const ANALYSIS_LANGUAGES = [
+  { value: "ko", label: "한국어" },
+  { value: "en", label: "English" },
+];
+
 const TRANSLATION_ENGINES = [
   { value: "google", label: "무료 (Google 번역)" },
   { value: "llm", label: "선택된 AI" },
@@ -107,6 +113,13 @@ export function SettingsPage({ settings }: { settings: Settings }) {
             value={settings.translationLanguage}
             options={LANGUAGES}
             onChange={(value) => updateSettings.mutate({ translationLanguage: value })}
+          />
+          <Select
+            label="AI 정리 언어"
+            value={settings.analysisLanguage}
+            options={ANALYSIS_LANGUAGES}
+            onChange={(value) => updateSettings.mutate({ analysisLanguage: value })}
+            hint="다음 분석부터 적용됩니다. 기존 논문은 AI 정리 탭에서 다시 분석하세요."
           />
           <Select
             label="번역 엔진"

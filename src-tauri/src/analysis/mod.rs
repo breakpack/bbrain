@@ -17,12 +17,13 @@ use schema::PaperAnalysisV1;
 const DIRECT_CHARACTER_BUDGET: usize = 120_000;
 const SECTION_CHARACTER_BUDGET: usize = 40_000;
 
+// The output language is NOT fixed here — `instructions()` appends the rule
+// from the "AI 정리 언어" setting, so this must stay language-neutral.
 const SYSTEM: &str = "\
 당신은 연구 논문을 정리하는 도우미입니다. \
 제공된 논문 텍스트에 실제로 있는 내용만 사용하고 추측하지 마세요. \
 기여점과 결과에는 근거가 있는 페이지 번호를 함께 제시하세요. \
-근거를 찾을 수 없으면 페이지 목록을 비워 두세요. \
-모든 서술형 값은 한국어로 작성하고, 키워드와 태그는 논문에서 쓰인 표기를 유지하세요.";
+근거를 찾을 수 없으면 페이지 목록을 비워 두세요.";
 
 /// The active provider plus its model, or a clear reason why AI work cannot run.
 pub struct ActiveProvider {
@@ -112,8 +113,14 @@ pub async fn analyze_paper(app: &AppHandle, paper_id: &str) -> Result<()> {
 
     let page_count = pages.len() as i64;
     let source = build_source(&pages);
+    let analysis_language = {
+        let state = app.state::<AppState>();
+        let conn = state.db.conn();
+        settings_repo::get(&conn)?.analysis_language
+    };
 
-    let analysis = generate_with_repair(&active, &source, page_count).await?;
+    let analysis =
+        generate_with_repair(&active, &source, page_count, &analysis_language).await?;
     let markdown = markdown::render(&paper, &analysis, &[]);
 
     {
@@ -193,6 +200,7 @@ async fn generate_with_repair(
     active: &ActiveProvider,
     source: &str,
     page_count: i64,
+    language: &str,
 ) -> Result<PaperAnalysisV1> {
     let request = |instructions: String| StructuredRequest {
         model: active.model.clone(),
@@ -206,7 +214,7 @@ async fn generate_with_repair(
 
     let first = active
         .client
-        .generate_structured(request(instructions(page_count)))
+        .generate_structured(request(instructions(page_count, language)))
         .await?;
 
     match schema::validate(first, page_count) {
@@ -219,7 +227,7 @@ async fn generate_with_repair(
                 .generate_structured(request(format!(
                     "{}\n\n이전 응답이 스키마 검증에 실패했습니다. 모든 필수 필드를 채우고 \
                      evidencePages는 1부터 {page_count} 사이의 정수만 사용하세요.",
-                    instructions(page_count)
+                    instructions(page_count, language)
                 )))
                 .await?;
 
@@ -228,10 +236,25 @@ async fn generate_with_repair(
     }
 }
 
-fn instructions(page_count: i64) -> String {
+/// `language` chooses the tongue of every narrative field (설정의 "AI 정리
+/// 언어"). Keywords/tags stay in the paper's own language either way — they
+/// feed the topic graph and search, where the original terms match best.
+fn instructions(page_count: i64, language: &str) -> String {
+    let language_rule = match language {
+        "en" => {
+            "Write every narrative field (summaries, researchProblem, methodology, \
+             results, limitations) in English."
+        }
+        _ => {
+            "모든 서술 필드(요약·연구 문제·방법·결과·한계)는 반드시 한국어로 작성하세요. \
+             전문 용어는 필요하면 원어를 괄호로 병기합니다. keywords와 suggestedTags는 \
+             논문 원어 그대로 둡니다."
+        }
+    };
     format!(
         "다음 {page_count}쪽 논문을 분석해 스키마에 맞는 JSON으로만 답하세요. \
-         evidencePages에는 해당 주장을 실제로 확인할 수 있는 페이지 번호만 넣으세요."
+         evidencePages에는 해당 주장을 실제로 확인할 수 있는 페이지 번호만 넣으세요. \
+         {language_rule}"
     )
 }
 
@@ -280,6 +303,21 @@ mod tests {
         (1..=count)
             .map(|number| (number as i64, "가".repeat(size)))
             .collect()
+    }
+
+    /// 설정의 "AI 정리 언어"가 지시문에 그대로 반영되는지 — 기본은 한국어,
+    /// "en"은 영어. SYSTEM 프롬프트는 언어 중립이므로 이 지시가 유일한 결정자다.
+    #[test]
+    fn the_analysis_language_setting_drives_the_instruction() {
+        let korean = instructions(3, "ko");
+        assert!(korean.contains("한국어로 작성"));
+
+        let english = instructions(3, "en");
+        assert!(english.contains("in English"));
+        assert!(!english.contains("한국어로 작성"));
+
+        // 알 수 없는 값은 안전하게 기본(한국어)으로.
+        assert!(instructions(3, "??").contains("한국어로 작성"));
     }
 
     #[test]

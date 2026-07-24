@@ -34,6 +34,8 @@ export type Settings = {
   hasAnthropicKey: boolean;
   hasDeepseekKey: boolean;
   translationLanguage: string;
+  /** AI 정리(논문 분석) 출력 언어: "ko"(기본) | "en" */
+  analysisLanguage: string;
   translationEngine: TranslationEngine;
   obsidianVaultPath: string | null;
   /** Obsidian Local REST API endpoint — the channel MCP servers use. */
@@ -56,6 +58,7 @@ export type SettingsPatch = Partial<{
   anthropicModel: string;
   deepseekModel: string;
   translationLanguage: string;
+  analysisLanguage: string;
   translationEngine: TranslationEngine;
   obsidianVaultPath: string;
   networkNoticeAccepted: boolean;

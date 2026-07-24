@@ -71,6 +71,7 @@ export function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     hasAnthropicKey: false,
     hasDeepseekKey: false,
     translationLanguage: "ko",
+    analysisLanguage: "ko",
     translationEngine: "google",
     obsidianVaultPath: null,
     obsidianRestUrl: null,

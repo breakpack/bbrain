@@ -722,6 +722,7 @@ mod tests {
             has_anthropic_key: false,
             has_deepseek_key: false,
             translation_language: "ko".into(),
+            analysis_language: "ko".into(),
             translation_engine: "google".into(),
             obsidian_vault_path: None,
             obsidian_rest_url: None,

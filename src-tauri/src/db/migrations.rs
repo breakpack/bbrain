@@ -46,6 +46,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "prune_orphan_rows",
         sql: include_str!("../../migrations/0007_prune_orphan_rows.sql"),
     },
+    Migration {
+        version: 8,
+        name: "analysis_language",
+        sql: include_str!("../../migrations/0008_analysis_language.sql"),
+    },
 ];
 
 pub fn current_version(conn: &Connection) -> Result<i64> {

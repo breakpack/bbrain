@@ -19,6 +19,8 @@ pub struct Settings {
     pub has_anthropic_key: bool,
     pub has_deepseek_key: bool,
     pub translation_language: String,
+    /// AI 정리(논문 분석) 출력 언어: `ko`(기본) 또는 `en`.
+    pub analysis_language: String,
     /// Which engine translates the reader's page/selection: `google` (free) or
     /// `llm` (the active provider). Free by default.
     pub translation_engine: String,
@@ -44,6 +46,7 @@ pub struct SettingsPatch {
     pub anthropic_model: Option<String>,
     pub deepseek_model: Option<String>,
     pub translation_language: Option<String>,
+    pub analysis_language: Option<String>,
     pub translation_engine: Option<String>,
     pub obsidian_vault_path: Option<String>,
     pub obsidian_rest_url: Option<String>,
@@ -70,7 +73,7 @@ pub fn get(conn: &Connection) -> Result<Settings> {
                 embedding_model_id, embedding_dimension, index_generation,
                 network_notice_accepted_at, onboarding_completed_at,
                 deepseek_model, deepseek_credential_ref, translation_engine,
-                obsidian_rest_url, obsidian_rest_credential_ref
+                obsidian_rest_url, obsidian_rest_credential_ref, analysis_language
          FROM settings WHERE id = 1",
         [],
         |row| {
@@ -95,6 +98,7 @@ pub fn get(conn: &Connection) -> Result<Settings> {
                 translation_engine: row.get(15)?,
                 obsidian_rest_url: row.get(16)?,
                 has_obsidian_rest_key: row.get::<_, Option<String>>(17)?.is_some(),
+                analysis_language: row.get(18)?,
             })
         },
     )?;
@@ -138,6 +142,12 @@ pub fn update(conn: &Connection, patch: &SettingsPatch) -> Result<Settings> {
     if let Some(language) = &patch.translation_language {
         conn.execute(
             "UPDATE settings SET translation_language = ?1, updated_at = ?2 WHERE id = 1",
+            params![language, now],
+        )?;
+    }
+    if let Some(language) = &patch.analysis_language {
+        conn.execute(
+            "UPDATE settings SET analysis_language = ?1, updated_at = ?2 WHERE id = 1",
             params![language, now],
         )?;
     }
