@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::Result;
-use crate::ids::new_id;
 
 /// Fraction of the unrotated page box, so a stored rectangle survives zoom,
 /// rotation and a re-render (DEVELOPMENT.md §7.3).
@@ -88,6 +87,15 @@ pub fn text_hash(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
+/// Deterministic sentence identity: the same text at the same position gets
+/// the same id across re-extractions. Random ids broke every stored reference
+/// (translation units' sentenceIds) on each re-extract — the translation still
+/// rendered, but hover↔source mapping silently died on unchanged pages.
+fn sentence_id(paper_id: &str, page_number: i64, order_index: i64, text: &str) -> String {
+    let material = format!("{paper_id}|{page_number}|{order_index}|{text}");
+    format!("s{}", &text_hash(&material)[..32])
+}
+
 /// Replaces a paper's extraction in one transaction, so a partial write can
 /// never leave sentences pointing at a page that no longer exists.
 pub fn replace_extraction(conn: &mut Connection, paper_id: &str, pages: &[ExtractedPage]) -> Result<()> {
@@ -128,7 +136,7 @@ pub fn replace_extraction(conn: &mut Connection, paper_id: &str, pages: &[Extrac
                     source_text, normalized_rects)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
-                    new_id(),
+                    sentence_id(paper_id, page.page_number, sentence.order_index, &sentence.text),
                     paper_id,
                     page.page_number,
                     sentence.order_index,
@@ -246,6 +254,37 @@ mod tests {
         )
         .unwrap();
         db
+    }
+
+    /// Cached translation units reference sentences by id; a re-extraction of
+    /// identical content must therefore reproduce identical ids, or every
+    /// hover↔source mapping silently dies while the text still renders.
+    #[test]
+    fn re_extracting_identical_content_keeps_sentence_ids() {
+        let db = seeded();
+        let mut conn = db.conn();
+        let pages = vec![page(
+            1,
+            "같은 텍스트.",
+            vec![ExtractedSentence {
+                order_index: 0,
+                paragraph_index: 0,
+                text: "같은 텍스트.".into(),
+                rects: vec![rect(0.1, 0.1, 0.5, 0.02)],
+            }],
+        )];
+
+        replace_extraction(&mut conn, "p1", &pages).unwrap();
+        let first = page_sentences(&conn, "p1", 1).unwrap();
+        replace_extraction(&mut conn, "p1", &pages).unwrap();
+        let second = page_sentences(&conn, "p1", 1).unwrap();
+
+        assert_eq!(first[0].id, second[0].id);
+        // Different text at the same slot is a different sentence.
+        assert_ne!(
+            sentence_id("p1", 1, 0, "같은 텍스트."),
+            sentence_id("p1", 1, 0, "다른 텍스트.")
+        );
     }
 
     #[test]

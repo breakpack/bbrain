@@ -582,7 +582,10 @@ export function ViewerPage({
         <aside
           aria-label="논문 도구"
           className={cn(
-            "flex shrink-0 flex-col border-l border-line bg-canvas",
+            // relative so the resizer's absolute left-0 lands on THIS panel's
+            // edge — without it the handle rendered against an ancestor and the
+            // panel looked un-resizable.
+            "relative flex shrink-0 flex-col border-l border-line bg-canvas",
             overlay && "absolute right-0 top-[49px] z-10 h-[calc(100%-49px)] shadow-card",
           )}
           style={{ width: panelWidth }}

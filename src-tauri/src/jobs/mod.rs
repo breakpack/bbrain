@@ -11,8 +11,9 @@ pub use runner::JobRunner;
 
 /// Bump when a step's output format changes, so existing papers re-run it
 /// instead of being skipped by the idempotency key.
-// 6: footnote/imprint band moves to the end of the page's reading order.
-pub const EXTRACT_VERSION: &str = "6";
+// 6: footnote/imprint band moves to the end of the page reading order.
+// 7: deterministic sentence ids — re-extraction keeps translation mappings.
+pub const EXTRACT_VERSION: &str = "7";
 pub const THUMBNAIL_VERSION: &str = "1";
 // Bumped with EXTRACT: a re-extraction that fixes the reading order must also
 // refresh the embeddings built from that text.
