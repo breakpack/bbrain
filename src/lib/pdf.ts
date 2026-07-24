@@ -178,20 +178,25 @@ const isBlank = (item: ExtractedItem) => item.text.trim().length === 0;
  * up as two clusters of left edges with an empty band — the gutter — between
  * them.
  */
-function detectColumnGutter(items: ExtractedItem[]): number | null {
+export function detectColumnGutter(items: ExtractedItem[]): number | null {
   const content = items.filter((item) => !isBlank(item));
   if (content.length < 12) return null;
 
   let best: { gutter: number; band: number } | null = null;
 
-  for (let gutter = 0.42; gutter <= 0.58; gutter += 0.01) {
+  // A candidate is read as "the right column starts at x = gutter". The
+  // emptiness test therefore looks only at the whitespace band JUST LEFT of
+  // the candidate: a symmetric window also swept up the right column's own
+  // left edge, so layouts whose right column starts near 0.50 (IEEE
+  // two-column) rejected every candidate and collapsed into one column.
+  for (let gutter = 0.42; gutter <= 0.62; gutter += 0.01) {
     let left = 0;
     let right = 0;
-    let band = 0; // left edges sitting in the gutter itself
+    let band = 0; // left edges starting inside the gap left of the candidate
 
     for (const item of content) {
       const edge = item.rect.x;
-      if (Math.abs(edge - gutter) < 0.04) band += 1;
+      if (edge >= gutter - 0.045 && edge < gutter - 0.005) band += 1;
       if (edge < gutter) left += 1;
       else right += 1;
     }

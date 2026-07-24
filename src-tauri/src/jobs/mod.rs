@@ -13,11 +13,12 @@ pub use runner::JobRunner;
 /// instead of being skipped by the idempotency key.
 // 6: footnote/imprint band moves to the end of the page reading order.
 // 7: deterministic sentence ids — re-extraction keeps translation mappings.
-pub const EXTRACT_VERSION: &str = "7";
+// 8: asymmetric gutter band — IEEE-style right-column-at-0.50 layouts detect.
+pub const EXTRACT_VERSION: &str = "8";
 pub const THUMBNAIL_VERSION: &str = "1";
 // Bumped with EXTRACT: a re-extraction that fixes the reading order must also
 // refresh the embeddings built from that text.
-pub const EMBED_VERSION: &str = "5";
+pub const EMBED_VERSION: &str = "6";
 pub const ANALYZE_VERSION: &str = "1";
 pub const RELATIONS_VERSION: &str = "1";
 pub const OBSIDIAN_VERSION: &str = "1";

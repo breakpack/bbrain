@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildParagraphText,
+  detectColumnGutter,
   extractPage,
   findRepeatedLines,
   groupIntoParagraphs,
@@ -544,6 +545,49 @@ describe("paragraph grouping", () => {
     ]);
 
     expect(texts(groups)).toEqual(["제목 없는 소제목", "본문 문장이 시작됩니다."]);
+  });
+});
+
+describe("column gutter detection", () => {
+  const item = (x: number): ExtractedItem => ({
+    text: "line",
+    rect: { x, y: 0.3, width: 0.3, height: 0.012 },
+    hasEOL: false,
+    baseline: 100,
+    heightPt: 10,
+    left: x,
+  });
+
+  it("finds the gutter of an IEEE-style layout whose right column starts at 0.50", () => {
+    // Measured from a real IEEE paper: left column at 0.06, right column at
+    // 0.50, plus indented/centred noise starting at 0.42-0.46. The symmetric
+    // band window used to sweep up the right column's own edge and reject
+    // every candidate, collapsing the page into one column.
+    const items = [
+      ...Array.from({ length: 40 }, () => item(0.06)),
+      // Indentation noise spread through the left column, as measured.
+      item(0.2),
+      item(0.28),
+      item(0.34),
+      item(0.38),
+      item(0.38),
+      item(0.4),
+      item(0.4),
+      item(0.42),
+      item(0.44),
+      item(0.46),
+      ...Array.from({ length: 40 }, () => item(0.5)),
+    ];
+
+    const gutter = detectColumnGutter(items);
+    expect(gutter).not.toBeNull();
+    expect(gutter!).toBeGreaterThan(0.46);
+    expect(gutter!).toBeLessThanOrEqual(0.5);
+  });
+
+  it("reports no gutter for a single-column page", () => {
+    const items = Array.from({ length: 40 }, (_, i) => item(0.06 + (i % 5) * 0.001));
+    expect(detectColumnGutter(items)).toBeNull();
   });
 });
 
