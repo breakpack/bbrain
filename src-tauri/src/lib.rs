@@ -132,6 +132,7 @@ pub fn run() {
             commands::graph::get_graph,
             commands::graph::get_paper_neighborhood,
             commands::graph::get_topic_graph,
+            commands::graph::get_tag_note,
             commands::graph::add_manual_relation,
             commands::graph::remove_manual_relation,
             commands::graph::configure_obsidian,

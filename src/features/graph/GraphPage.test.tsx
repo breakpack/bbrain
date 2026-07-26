@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { invokeMock, mockCommands } from "@/test/tauri";
 import { renderWithQuery } from "@/test/render";
-import type { TopicGraph } from "@/lib/types";
+import type { TagNote, TopicGraph } from "@/lib/types";
 import { GraphPage } from "./GraphPage";
 
 /**
@@ -93,7 +93,10 @@ describe("graph page — topic view (default)", () => {
 
   it("shows a selected topic's papers and opens one on click", async () => {
     const opened: string[] = [];
-    mockCommands({ get_topic_graph: () => TOPIC_GRAPH });
+    mockCommands({
+      get_topic_graph: () => TOPIC_GRAPH,
+      get_tag_note: () => null,
+    });
 
     renderWithQuery(<GraphPage onOpenPaper={(id) => opened.push(id)} />);
 
@@ -106,6 +109,56 @@ describe("graph page — topic view (default)", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Attention Is All You Need" }));
     expect(opened).toEqual(["p1"]);
+  });
+
+  it("renders a selected topic's concept note with its evidence pages, and jumps to the paper on click", async () => {
+    const opened: string[] = [];
+    const note: TagNote = {
+      label: "Transformer",
+      entries: [
+        {
+          paperId: "p1",
+          paperTitle: "Attention Is All You Need",
+          insight: "셀프 어텐션으로 순차 연산 없이 문맥을 인코딩한다.",
+          evidencePages: [3, 5],
+          updatedAt: "2026-07-01T00:00:00Z",
+        },
+      ],
+    };
+    mockCommands({
+      get_topic_graph: () => TOPIC_GRAPH,
+      get_tag_note: () => note,
+    });
+
+    renderWithQuery(<GraphPage onOpenPaper={(id) => opened.push(id)} />);
+
+    await waitFor(() => expect(cyHarness.instances).toBeGreaterThan(0));
+    fire("select", "node", "t1");
+
+    expect(
+      await screen.findByText("셀프 어텐션으로 순차 연산 없이 문맥을 인코딩한다."),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "p.3" }));
+    expect(opened).toEqual(["p1"]);
+  });
+
+  it("explains that a concept has no note yet when entries are empty", async () => {
+    mockCommands({
+      get_topic_graph: () => TOPIC_GRAPH,
+      get_tag_note: () => ({ label: "Transformer", entries: [] }),
+    });
+
+    renderWithQuery(<GraphPage onOpenPaper={noop} />);
+
+    await waitFor(() => expect(cyHarness.instances).toBeGreaterThan(0));
+    fire("select", "node", "t1");
+
+    expect(
+      await screen.findByText(
+        "아직 이 개념에 대한 노트가 없습니다. 논문을 분석하면 여기에 쌓입니다.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("forces a rebuild when the user presses 재구성", async () => {

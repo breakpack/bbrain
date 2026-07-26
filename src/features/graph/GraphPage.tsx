@@ -272,6 +272,9 @@ function TopicGraphView({
             <Card className="flex flex-col gap-sm p-md">
               <CardTitle>{selected.label}</CardTitle>
               <Badge>{selected.paperCount}편의 논문</Badge>
+
+              <TagNoteSection label={selected.label} onOpenPaper={onOpenPaper} />
+
               <CardDescription>이 토픽을 다룬 논문 — 눌러서 엽니다.</CardDescription>
               <ul className="flex flex-col gap-1">
                 {selected.papers.map((paper) => (
@@ -290,6 +293,81 @@ function TopicGraphView({
         </>
       }
     />
+  );
+}
+
+/**
+ * The concept's second-brain note: what it means in each paper that discussed
+ * it, distilled from AI analyses. Refetches whenever the selected topic changes.
+ */
+function TagNoteSection({
+  label,
+  onOpenPaper,
+}: {
+  label: string;
+  onOpenPaper: (paperId: string) => void;
+}) {
+  const note = useQuery({
+    queryKey: ["tag-note", label],
+    queryFn: () => api.getTagNote(label),
+  });
+
+  if (note.isPending) {
+    return (
+      <div className="flex flex-col gap-xs" aria-busy="true" aria-label="개념 노트 불러오는 중">
+        {[0, 1].map((row) => (
+          <div key={row} className="h-12 animate-pulse rounded-sm bg-canvas-soft" />
+        ))}
+      </div>
+    );
+  }
+
+  if (note.isError) {
+    return (
+      <p role="alert" className="text-caption text-danger">
+        {errorMessage(note.error)} 개념 노트를 불러오지 못했습니다.
+      </p>
+    );
+  }
+
+  const entries = note.data?.entries ?? [];
+
+  return (
+    <section className="flex flex-col gap-sm">
+      <h3 className="text-caption font-bold text-ink-heading">개념 노트</h3>
+      {entries.length === 0 ? (
+        <CardDescription>
+          아직 이 개념에 대한 노트가 없습니다. 논문을 분석하면 여기에 쌓입니다.
+        </CardDescription>
+      ) : (
+        <ul className="flex flex-col gap-sm">
+          {entries.map((entry) => (
+            <li key={entry.paperId} className="flex flex-col gap-1">
+              <button
+                onClick={() => onOpenPaper(entry.paperId)}
+                className="w-full rounded-sm text-left text-caption font-medium text-ink hover:text-primary"
+              >
+                {entry.paperTitle}
+              </button>
+              <p className="text-caption text-ink-body">{entry.insight}</p>
+              {entry.evidencePages.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {entry.evidencePages.map((page) => (
+                    <button
+                      key={page}
+                      onClick={() => onOpenPaper(entry.paperId)}
+                      className="rounded-sm border border-line px-1.5 py-0.5 text-caption text-ink-body transition-colors duration-fast hover:border-primary hover:text-primary"
+                    >
+                      p.{page}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

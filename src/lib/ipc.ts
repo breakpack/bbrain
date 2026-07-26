@@ -35,6 +35,7 @@ import type {
   StoredMessage,
   SyncRecord,
   Tag,
+  TagNote,
   ViewerDocument,
 } from "./types";
 
@@ -243,6 +244,10 @@ export const api = {
   /// Exports the topic graph to the configured Obsidian vault as linked notes.
   /// Returns the number of topic notes written.
   exportGraphToObsidian: () => invoke<number>("export_graph_to_obsidian"),
+
+  /// A concept's accumulated note — what it means in each paper that discussed
+  /// it. null when the concept has no note yet.
+  getTagNote: (label: string) => invoke<TagNote | null>("get_tag_note", { label }),
 
   addManualRelation: (sourcePaperId: string, targetPaperId: string) =>
     invoke<void>("add_manual_relation", { input: { sourcePaperId, targetPaperId } }),

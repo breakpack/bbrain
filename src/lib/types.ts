@@ -445,6 +445,21 @@ export type TopicGraph = {
   edges: TopicEdge[];
 };
 
+/** One paper's accumulated insight about a concept, with the pages it draws from. */
+export type TagNoteEntry = {
+  paperId: string;
+  paperTitle: string;
+  insight: string;
+  evidencePages: number[];
+  updatedAt: string;
+};
+
+/** A concept's second-brain note: what it is, distilled per paper that touched it. */
+export type TagNote = {
+  label: string;
+  entries: TagNoteEntry[];
+};
+
 // --- paper neighborhood (ConnectedPapers-style focus graph) ------------------
 
 /** Where a neighbour sits relative to the focus paper in time. */

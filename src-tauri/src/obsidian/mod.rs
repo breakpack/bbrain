@@ -319,6 +319,14 @@ pub async fn export_topic_graph(app: &AppHandle) -> Result<usize> {
             body.push('\n');
         }
 
+        {
+            let conn = state.db.conn();
+            if let Some(section) = concept_note_section(&conn, &node.label)? {
+                body.push_str(&section);
+                body.push('\n');
+            }
+        }
+
         let note = format!("{MANAGED_START}\n{body}{MANAGED_END}\n");
         let path = topics_dir.join(format!("{}.md", safe_file_name(&node.label)));
         vault_put(rest_config.as_ref(), Path::new(&vault), &path, &note).await?;
@@ -327,6 +335,57 @@ pub async fn export_topic_graph(app: &AppHandle) -> Result<usize> {
 
     let _ = app.emit(SYNC_STATUS, ());
     Ok(written)
+}
+
+/// Builds the "## 개념 노트" section for a topic note: one subsection per paper
+/// whose analysis recorded what this concept means there (`tag_note_entries`),
+/// matched by tag display name case-insensitively against the topic label.
+/// Returns `None` when no tag matches the label or the tag has no entries, so
+/// callers can leave existing note layout untouched.
+fn concept_note_section(conn: &rusqlite::Connection, topic_label: &str) -> Result<Option<String>> {
+    let mut statement = conn.prepare(
+        "SELECT p.title, e.insight_md, e.evidence_pages
+         FROM tag_note_entries e
+         JOIN papers p ON p.id = e.paper_id
+         JOIN tags t ON t.id = e.tag_id
+         WHERE LOWER(t.display_name) = LOWER(?1)
+         ORDER BY e.updated_at DESC",
+    )?;
+    let rows = statement
+        .query_map(params![topic_label], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    let mut section = String::from("## 개념 노트\n");
+    for (index, (title, insight_md, evidence_pages)) in rows.into_iter().enumerate() {
+        if index > 0 {
+            section.push('\n');
+        }
+        let pages: Vec<i64> = serde_json::from_str(&evidence_pages).unwrap_or_default();
+        if pages.is_empty() {
+            section.push_str(&format!("### {title}\n"));
+        } else {
+            let page_list = pages
+                .iter()
+                .map(|page| format!("p.{page}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            section.push_str(&format!("### {title} ({page_list})\n"));
+        }
+        section.push_str(insight_md.trim());
+        section.push('\n');
+    }
+
+    Ok(Some(section))
 }
 
 /// Link from a topic note to a paper note as an `obsidian://` URL, NOT a wiki
@@ -649,5 +708,132 @@ Bbrain이 모르는 내용.
             })
             .count();
         assert_eq!(leftovers, 0);
+    }
+
+    fn seed_tag_note_entry(
+        conn: &rusqlite::Connection,
+        tag_id: &str,
+        tag_display_name: &str,
+        paper_id: &str,
+        paper_title: &str,
+        insight_md: &str,
+        evidence_pages: &str,
+        updated_at: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO papers (id, sha256, managed_path, title, import_status, created_at, updated_at)
+             VALUES (?1, ?1, '/tmp/x.pdf', ?2, 'ready', ?3, ?3)",
+            params![paper_id, paper_title, updated_at],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tags (id, normalized_name, display_name, source) VALUES (?1, ?2, ?3, 'ai')
+             ON CONFLICT(id) DO NOTHING",
+            params![tag_id, tag_display_name.to_lowercase(), tag_display_name],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tag_note_entries (tag_id, paper_id, insight_md, evidence_pages, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![tag_id, paper_id, insight_md, evidence_pages, updated_at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn concept_note_section_includes_title_pages_and_insight() {
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        seed_tag_note_entry(
+            &conn,
+            "t1",
+            "Transformer",
+            "p1",
+            "Attention Is All You Need",
+            "셀프 어텐션으로 순환 없이 시퀀스를 처리한다.",
+            "[3,5]",
+            "2026-07-14T00:00:00Z",
+        );
+
+        // The topic label differs only in case from the tag's display name.
+        let section = concept_note_section(&conn, "transformer").unwrap().unwrap();
+
+        assert!(section.starts_with("## 개념 노트\n"));
+        assert!(section.contains("### Attention Is All You Need (p.3, p.5)"));
+        assert!(section.contains("셀프 어텐션으로 순환 없이 시퀀스를 처리한다."));
+    }
+
+    #[test]
+    fn concept_note_section_omits_pages_when_evidence_is_empty() {
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        seed_tag_note_entry(
+            &conn,
+            "t1",
+            "Transformer",
+            "p1",
+            "Attention Is All You Need",
+            "셀프 어텐션 개념.",
+            "[]",
+            "2026-07-14T00:00:00Z",
+        );
+
+        let section = concept_note_section(&conn, "Transformer").unwrap().unwrap();
+
+        assert!(section.contains("### Attention Is All You Need\n"));
+        assert!(!section.contains("("));
+    }
+
+    #[test]
+    fn concept_note_section_orders_entries_by_most_recently_updated() {
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        seed_tag_note_entry(
+            &conn,
+            "t1",
+            "Transformer",
+            "p1",
+            "Older Paper",
+            "오래된 인사이트.",
+            "[]",
+            "2026-01-01T00:00:00Z",
+        );
+        seed_tag_note_entry(
+            &conn,
+            "t1",
+            "Transformer",
+            "p2",
+            "Newer Paper",
+            "최신 인사이트.",
+            "[]",
+            "2026-07-14T00:00:00Z",
+        );
+
+        let section = concept_note_section(&conn, "Transformer").unwrap().unwrap();
+
+        let newer_index = section.find("Newer Paper").unwrap();
+        let older_index = section.find("Older Paper").unwrap();
+        assert!(newer_index < older_index, "the most recently updated entry comes first");
+    }
+
+    #[test]
+    fn concept_note_section_is_none_when_no_tag_matches_the_topic_label() {
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let conn = db.conn();
+
+        assert!(concept_note_section(&conn, "존재하지 않는 개념").unwrap().is_none());
+    }
+
+    #[test]
+    fn concept_note_section_is_none_when_the_matching_tag_has_no_entries() {
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO tags (id, normalized_name, display_name, source) VALUES ('t1', 'transformer', 'Transformer', 'ai')",
+            [],
+        )
+        .unwrap();
+
+        assert!(concept_note_section(&conn, "Transformer").unwrap().is_none());
     }
 }

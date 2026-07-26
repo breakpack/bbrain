@@ -113,14 +113,26 @@ pub async fn analyze_paper(app: &AppHandle, paper_id: &str) -> Result<()> {
 
     let page_count = pages.len() as i64;
     let source = build_source(&pages);
-    let analysis_language = {
+    let (analysis_language, existing_tags) = {
         let state = app.state::<AppState>();
         let conn = state.db.conn();
-        settings_repo::get(&conn)?.analysis_language
+        let language = settings_repo::get(&conn)?.analysis_language;
+        let tags = paper_repo::all_tags(&conn)?
+            .into_iter()
+            .map(|tag| tag.display_name)
+            .take(100)
+            .collect::<Vec<_>>();
+        (language, tags)
     };
 
-    let analysis =
-        generate_with_repair(&active, &source, page_count, &analysis_language).await?;
+    let analysis = generate_with_repair(
+        &active,
+        &source,
+        page_count,
+        &analysis_language,
+        &existing_tags,
+    )
+    .await?;
     let markdown = markdown::render(&paper, &analysis, &[]);
 
     {
@@ -162,6 +174,8 @@ pub async fn analyze_paper(app: &AppHandle, paper_id: &str) -> Result<()> {
             }
         }
 
+        save_tag_insights(&conn, paper_id, &analysis.tag_insights)?;
+
         if let Some(abstract_text) = analysis.short_summary.get(..).map(str::to_string) {
             conn.execute(
                 "UPDATE paper_metadata SET abstract = COALESCE(abstract, ?1) WHERE paper_id = ?2",
@@ -194,6 +208,37 @@ pub async fn analyze_paper(app: &AppHandle, paper_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Writes each tag insight as this paper's row on that concept's note.
+/// Keyed by `(tag_id, paper_id)`, so re-analysing the same paper replaces only
+/// its own row — every other paper's entry on the same concept note survives.
+fn save_tag_insights(
+    conn: &rusqlite::Connection,
+    paper_id: &str,
+    insights: &[schema::TagInsight],
+) -> Result<()> {
+    for insight in insights {
+        if let Ok(tag_id) = paper_repo::upsert_tag(conn, &insight.tag, "ai") {
+            conn.execute(
+                "INSERT INTO tag_note_entries
+                   (tag_id, paper_id, insight_md, evidence_pages, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(tag_id, paper_id) DO UPDATE SET
+                   insight_md = excluded.insight_md,
+                   evidence_pages = excluded.evidence_pages,
+                   updated_at = excluded.updated_at",
+                params![
+                    tag_id,
+                    paper_id,
+                    insight.insight,
+                    serde_json::to_string(&insight.evidence_pages).unwrap_or_default(),
+                    now_iso8601(),
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// A structured response that fails validation gets exactly one repair attempt,
 /// then the job fails (DEVELOPMENT.md §10.2).
 async fn generate_with_repair(
@@ -201,6 +246,7 @@ async fn generate_with_repair(
     source: &str,
     page_count: i64,
     language: &str,
+    existing_tags: &[String],
 ) -> Result<PaperAnalysisV1> {
     let request = |instructions: String| StructuredRequest {
         model: active.model.clone(),
@@ -214,7 +260,7 @@ async fn generate_with_repair(
 
     let first = active
         .client
-        .generate_structured(request(instructions(page_count, language)))
+        .generate_structured(request(instructions(page_count, language, existing_tags)))
         .await?;
 
     match schema::validate(first, page_count) {
@@ -227,7 +273,7 @@ async fn generate_with_repair(
                 .generate_structured(request(format!(
                     "{}\n\n이전 응답이 스키마 검증에 실패했습니다. 모든 필수 필드를 채우고 \
                      evidencePages는 1부터 {page_count} 사이의 정수만 사용하세요.",
-                    instructions(page_count, language)
+                    instructions(page_count, language, existing_tags)
                 )))
                 .await?;
 
@@ -239,7 +285,11 @@ async fn generate_with_repair(
 /// `language` chooses the tongue of every narrative field (설정의 "AI 정리
 /// 언어"). Keywords/tags stay in the paper's own language either way — they
 /// feed the topic graph and search, where the original terms match best.
-fn instructions(page_count: i64, language: &str) -> String {
+/// `existing_tags` are the library's current tag display names (최대 100개):
+/// listing them steers the model to reuse a concept's existing spelling
+/// instead of forking a near-duplicate tag, so the concept note in
+/// `tag_note_entries` accumulates on one row per concept.
+fn instructions(page_count: i64, language: &str, existing_tags: &[String]) -> String {
     let language_rule = match language {
         "en" => {
             "Write every narrative field (summaries, researchProblem, methodology, \
@@ -251,10 +301,24 @@ fn instructions(page_count: i64, language: &str) -> String {
              논문 원어 그대로 둡니다."
         }
     };
+    let existing_tags_note = if existing_tags.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "라이브러리에 이미 있는 태그 목록: {}. ",
+            existing_tags.join(", ")
+        )
+    };
+    let tag_rule = format!(
+        "\n\n{existing_tags_note}이 목록에 같은 개념이 있으면 반드시 같은 표기를 재사용하고, \
+         목록에 없는 새로운 개념일 때만 새 태그를 만드세요. 각 suggestedTag마다 tagInsights에 \
+         이 논문에서 그 개념이 무엇이고 어떻게 쓰이는지를 1~3문장으로 쓰고 evidencePages에 \
+         근거 페이지를 넣으세요."
+    );
     format!(
         "다음 {page_count}쪽 논문을 분석해 스키마에 맞는 JSON으로만 답하세요. \
          evidencePages에는 해당 주장을 실제로 확인할 수 있는 페이지 번호만 넣으세요. \
-         {language_rule}"
+         {language_rule}{tag_rule}"
     )
 }
 
@@ -309,15 +373,29 @@ mod tests {
     /// "en"은 영어. SYSTEM 프롬프트는 언어 중립이므로 이 지시가 유일한 결정자다.
     #[test]
     fn the_analysis_language_setting_drives_the_instruction() {
-        let korean = instructions(3, "ko");
+        let korean = instructions(3, "ko", &[]);
         assert!(korean.contains("한국어로 작성"));
 
-        let english = instructions(3, "en");
+        let english = instructions(3, "en", &[]);
         assert!(english.contains("in English"));
         assert!(!english.contains("한국어로 작성"));
 
         // 알 수 없는 값은 안전하게 기본(한국어)으로.
-        assert!(instructions(3, "??").contains("한국어로 작성"));
+        assert!(instructions(3, "??", &[]).contains("한국어로 작성"));
+    }
+
+    /// 라이브러리에 기존 태그가 있으면 지시문에 나열되어 같은 개념의 재표기를
+    /// 막는다. 없을 때는 빈 목록 문구 없이 재사용 규칙만 남는다.
+    #[test]
+    fn existing_tags_are_listed_so_the_model_reuses_them() {
+        let with_tags = instructions(3, "ko", &["RAG".to_string(), "Attention".to_string()]);
+        assert!(with_tags.contains("RAG, Attention"));
+        assert!(with_tags.contains("같은 표기를 재사용"));
+        assert!(with_tags.contains("tagInsights"));
+
+        let without_tags = instructions(3, "ko", &[]);
+        assert!(!without_tags.contains("이미 있는 태그 목록"));
+        assert!(without_tags.contains("같은 표기를 재사용"));
     }
 
     #[test]
@@ -343,5 +421,52 @@ mod tests {
     fn the_system_prompt_forbids_invented_evidence() {
         assert!(SYSTEM.contains("추측하지"));
         assert!(SYSTEM.contains("근거를 찾을 수 없으면"));
+    }
+
+    fn seed_paper(conn: &rusqlite::Connection, id: &str, title: &str) {
+        paper_repo::insert(conn, id, id, "/tmp/x.pdf", title, paper_repo::ImportStatus::Ready)
+            .unwrap();
+    }
+
+    fn insight(tag: &str, text: &str, pages: Vec<i64>) -> schema::TagInsight {
+        schema::TagInsight {
+            tag: tag.to_string(),
+            insight: text.to_string(),
+            evidence_pages: pages,
+        }
+    }
+
+    /// 재분석 시 같은 논문의 개념 노트 항목은 교체되고, 다른 논문이 같은
+    /// 태그에 남긴 항목은 그대로 유지되어야 한다 — 노트는 논문마다 쌓인다.
+    #[test]
+    fn reanalysis_replaces_its_own_entry_and_keeps_other_papers() {
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        seed_paper(&conn, "paper-a", "Paper A");
+        seed_paper(&conn, "paper-b", "Paper B");
+
+        save_tag_insights(&conn, "paper-a", &[insight("RAG", "첫 분석", vec![1])]).unwrap();
+        save_tag_insights(&conn, "paper-b", &[insight("RAG", "다른 논문의 설명", vec![2])])
+            .unwrap();
+
+        // paper-a re-analysed: its RAG entry changes, paper-b's does not.
+        save_tag_insights(&conn, "paper-a", &[insight("RAG", "재분석된 설명", vec![5])]).unwrap();
+
+        let mut statement = conn
+            .prepare(
+                "SELECT paper_id, insight_md, evidence_pages FROM tag_note_entries
+                 WHERE tag_id = (SELECT id FROM tags WHERE normalized_name = 'rag')
+                 ORDER BY paper_id",
+            )
+            .unwrap();
+        let rows: Vec<(String, String, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(rows.len(), 2, "one row per paper on the same concept note");
+        assert_eq!(rows[0], ("paper-a".into(), "재분석된 설명".into(), "[5]".into()));
+        assert_eq!(rows[1], ("paper-b".into(), "다른 논문의 설명".into(), "[2]".into()));
     }
 }

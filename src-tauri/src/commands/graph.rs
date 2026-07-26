@@ -1,8 +1,9 @@
-use serde::Deserialize;
+use rusqlite::{params, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::db::{paper_repo, settings_repo};
-use crate::error::{AppError, CommandResult};
+use crate::error::{AppError, CommandResult, Result};
 use crate::jobs::{self, JobType};
 use crate::neighborhood::{self, PaperNeighborhood};
 use crate::relations::{self, Graph};
@@ -30,6 +31,68 @@ pub fn get_paper_neighborhood(
 #[tauri::command]
 pub async fn get_topic_graph(app: AppHandle, rebuild: Option<bool>) -> CommandResult<TopicGraph> {
     Ok(topics::ensure_and_load(&app, rebuild.unwrap_or(false)).await?)
+}
+
+/// One paper's contribution to a concept's accumulated note (§ tag insights).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagNoteEntry {
+    pub paper_id: String,
+    pub paper_title: String,
+    pub insight: String,
+    pub evidence_pages: Vec<i64>,
+    pub updated_at: String,
+}
+
+/// The concept note for one tag: every paper's explanation of it, newest first.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagNote {
+    pub label: String,
+    pub entries: Vec<TagNoteEntry>,
+}
+
+/// The "second brain" note for a single concept, keyed by its tag label.
+#[tauri::command]
+pub fn get_tag_note(state: State<'_, AppState>, label: String) -> CommandResult<Option<TagNote>> {
+    Ok(find_tag_note(&state.db.conn(), &label)?)
+}
+
+/// Connection-facing core of `get_tag_note`, so the lookup is testable without
+/// a running Tauri app. `label` matches `tags.display_name` case-insensitively.
+fn find_tag_note(conn: &rusqlite::Connection, label: &str) -> Result<Option<TagNote>> {
+    let tag = conn
+        .query_row(
+            "SELECT id, display_name FROM tags WHERE display_name = ?1 COLLATE NOCASE",
+            params![label],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+
+    let Some((tag_id, display_name)) = tag else {
+        return Ok(None);
+    };
+
+    let mut statement = conn.prepare(
+        "SELECT e.paper_id, p.title, e.insight_md, e.evidence_pages, e.updated_at
+         FROM tag_note_entries e JOIN papers p ON p.id = e.paper_id
+         WHERE e.tag_id = ?1
+         ORDER BY e.updated_at DESC",
+    )?;
+    let entries = statement
+        .query_map(params![tag_id], |row| {
+            let evidence_pages: String = row.get(3)?;
+            Ok(TagNoteEntry {
+                paper_id: row.get(0)?,
+                paper_title: row.get(1)?,
+                insight: row.get(2)?,
+                evidence_pages: serde_json::from_str(&evidence_pages).unwrap_or_default(),
+                updated_at: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(Some(TagNote { label: display_name, entries }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,4 +321,62 @@ pub fn list_sync_records(state: State<'_, AppState>) -> CommandResult<Vec<SyncRe
     })?;
 
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+
+    fn seed_paper(conn: &rusqlite::Connection, id: &str, title: &str) {
+        paper_repo::insert(conn, id, id, "/tmp/x.pdf", title, paper_repo::ImportStatus::Ready)
+            .unwrap();
+    }
+
+    fn seed_entry(
+        conn: &rusqlite::Connection,
+        tag_id: &str,
+        paper_id: &str,
+        insight: &str,
+        pages: &str,
+        updated_at: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO tag_note_entries (tag_id, paper_id, insight_md, evidence_pages, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![tag_id, paper_id, insight, pages, updated_at],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn no_matching_tag_returns_none() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(find_tag_note(&db.conn(), "nonexistent").unwrap().is_none());
+    }
+
+    /// label 매칭은 대소문자 무시이고, entries는 updated_at 내림차순으로
+    /// paper 제목과 함께 나와야 한다 — IPC 계약의 정렬·조인 부분.
+    #[test]
+    fn a_tag_note_joins_paper_titles_and_sorts_newest_first() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+
+        seed_paper(&conn, "paper-a", "Paper A");
+        seed_paper(&conn, "paper-b", "Paper B");
+        let tag_id = paper_repo::upsert_tag(&conn, "RAG", "ai").unwrap();
+
+        seed_entry(&conn, &tag_id, "paper-a", "첫 논문의 설명", "[1,2]", "2024-01-01T00:00:00Z");
+        seed_entry(&conn, &tag_id, "paper-b", "둘째 논문의 설명", "[3]", "2024-06-01T00:00:00Z");
+
+        let note = find_tag_note(&conn, "rag").unwrap().expect("tag exists");
+
+        assert_eq!(note.label, "RAG");
+        assert_eq!(note.entries.len(), 2);
+        assert_eq!(note.entries[0].paper_id, "paper-b");
+        assert_eq!(note.entries[0].paper_title, "Paper B");
+        assert_eq!(note.entries[0].evidence_pages, vec![3]);
+        assert_eq!(note.entries[1].paper_id, "paper-a");
+        assert_eq!(note.entries[1].evidence_pages, vec![1, 2]);
+    }
 }
