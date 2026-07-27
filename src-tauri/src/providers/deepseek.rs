@@ -111,6 +111,7 @@ impl LlmProvider for DeepSeekProvider {
         let response = client()?
             .post(CHAT_URL)
             .bearer_auth(&self.api_key)
+            .timeout(super::GENERATION_TIMEOUT)
             .json(&body)
             .send()
             .await
@@ -159,6 +160,7 @@ impl LlmProvider for DeepSeekProvider {
         let response = client()?
             .post(CHAT_URL)
             .bearer_auth(&self.api_key)
+            .timeout(super::GENERATION_TIMEOUT)
             .json(&body)
             .send()
             .await

@@ -156,8 +156,18 @@ impl AnyProvider {
     }
 }
 
+/// Ceiling for generation calls (구조화 분석·채팅 스트림). A non-streaming
+/// analysis legitimately generates for minutes — the client-wide 30s total
+/// timeout was cutting every long analysis off mid-generation, and the cut
+/// surfaced as a spurious `Network` failure after three backoff retries.
+/// Callers opt in per request with `.timeout(GENERATION_TIMEOUT)`, which
+/// overrides the client default below.
+pub const GENERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 pub fn client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
+        // Total-request default for quick control-plane calls (model lists,
+        // key validation). Generation requests override it per request.
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| AppError::Internal(format!("http client: {e}")))

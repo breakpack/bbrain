@@ -77,6 +77,10 @@ pub struct SubmitExtractionInput {
     pub job_id: String,
     pub paper_id: String,
     pub pages: Vec<ExtractedPage>,
+    /// Title found inside the PDF (metadata or page-1 layout), when one could
+    /// be detected with confidence. Absent → the current title stands.
+    #[serde(default)]
+    pub detected_title: Option<String>,
 }
 
 /// The webview's PDF.js finished extracting. Persist it, then let the runner's
@@ -93,6 +97,12 @@ pub fn submit_extraction(
         let mut conn = state.db.conn();
         page_repo::replace_extraction(&mut conn, &input.paper_id, &input.pages)?;
         paper_repo::set_page_count(&conn, &input.paper_id, page_count)?;
+
+        // The filename is only a placeholder — the paper's own title replaces
+        // it (never a title the user typed; see `apply_detected_title`).
+        if let Some(title) = input.detected_title.as_deref() {
+            paper_repo::apply_detected_title(&conn, &input.paper_id, title)?;
+        }
 
         // A scan with no text layer can still be read, but translation, analysis
         // and RAG have nothing to work on — mark it partial rather than failed.

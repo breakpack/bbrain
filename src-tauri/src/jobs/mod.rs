@@ -14,7 +14,8 @@ pub use runner::JobRunner;
 // 6: footnote/imprint band moves to the end of the page reading order.
 // 7: deterministic sentence ids — re-extraction keeps translation mappings.
 // 8: asymmetric gutter band — IEEE-style right-column-at-0.50 layouts detect.
-pub const EXTRACT_VERSION: &str = "8";
+// 9: detected in-PDF title — re-extraction replaces filename-derived titles.
+pub const EXTRACT_VERSION: &str = "9";
 pub const THUMBNAIL_VERSION: &str = "1";
 // Bumped with EXTRACT: a re-extraction that fixes the reading order must also
 // refresh the embeddings built from that text.

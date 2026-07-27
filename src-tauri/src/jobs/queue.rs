@@ -197,7 +197,13 @@ pub enum Retry {
 
 pub fn classify(error: &AppError, attempts: i64) -> Retry {
     match error {
-        AppError::ProviderAuth | AppError::ModelUnsupported(_) => Retry::WaitForKey,
+        // CredentialStore included: a keychain prompt the user dismissed (or a
+        // re-signed dev binary macOS no longer trusts) resolves by user action
+        // or a relaunch — terminal failure here left papers stuck in
+        // waiting_for_ai with no path back.
+        AppError::ProviderAuth | AppError::ModelUnsupported(_) | AppError::CredentialStore(_) => {
+            Retry::WaitForKey
+        }
 
         AppError::ProviderRateLimit {
             retry_after_seconds,
@@ -268,6 +274,24 @@ pub fn recover_running(conn: &Connection) -> Result<usize> {
 
     if recovered > 0 {
         tracing::info!(recovered, "requeued jobs interrupted by a previous run");
+    }
+    Ok(recovered)
+}
+
+/// Failures whose cause is typically gone after a relaunch (keychain access
+/// restored, network back, a since-fixed storage bug) get one fresh chance per
+/// launch. Terminal causes — corrupt PDFs, schema-invalid responses — stay
+/// failed so a bad input never spins across launches.
+pub fn recover_transient_failures(conn: &Connection) -> Result<usize> {
+    let recovered = conn.execute(
+        "UPDATE jobs SET status = 'queued', attempts = 0, not_before = NULL, updated_at = ?1
+         WHERE status = 'failed'
+           AND error_code IN ('CredentialStore', 'Network', 'Storage', 'ProviderUnavailable')",
+        params![now_iso8601()],
+    )?;
+
+    if recovered > 0 {
+        tracing::info!(recovered, "requeued jobs that failed for transient reasons");
     }
     Ok(recovered)
 }
@@ -397,6 +421,57 @@ mod tests {
 
         assert_eq!(status, JobStatus::WaitingForKey);
         assert!(claim_next(&conn).unwrap().is_none(), "must not spin on a bad key");
+    }
+
+    /// 키체인 접근 거부는 사용자가 승인하거나 재실행하면 풀리는 문제다.
+    /// 영구 실패로 종결하면 논문이 waiting_for_ai에 영원히 갇힌다.
+    #[test]
+    fn a_keychain_denial_waits_instead_of_failing_terminally() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        seed_paper(&conn, "p1");
+        enqueue(&conn, Some("p1"), JobType::Analyze, "v1").unwrap();
+        let job = claim_next(&conn).unwrap().unwrap();
+
+        let status = fail(
+            &conn,
+            &job,
+            &AppError::CredentialStore(keyring::Error::NoEntry),
+        )
+        .unwrap();
+
+        assert_eq!(status, JobStatus::WaitingForKey);
+    }
+
+    /// 일시적 원인(키체인/네트워크/스토리지)으로 failed된 잡은 앱 재시작 시
+    /// 한 번 다시 시도한다. 손상된 PDF 같은 영구 원인은 그대로 둔다.
+    #[test]
+    fn transient_failures_get_one_fresh_try_per_launch() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        seed_paper(&conn, "p1");
+
+        enqueue(&conn, Some("p1"), JobType::Analyze, "v1").unwrap();
+        enqueue(&conn, Some("p1"), JobType::Extract, "v1").unwrap();
+
+        // Old builds wrote CredentialStore failures as terminal; simulate one,
+        // plus a genuinely terminal rejection that must stay failed.
+        conn.execute(
+            "UPDATE jobs SET status = 'failed', error_code = 'CredentialStore' WHERE type = 'analyze'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE jobs SET status = 'failed', error_code = 'Rejected' WHERE type = 'extract'",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(recover_transient_failures(&conn).unwrap(), 1);
+
+        let requeued = claim_next(&conn).unwrap().unwrap();
+        assert_eq!(requeued.job_type, JobType::Analyze);
+        assert!(claim_next(&conn).unwrap().is_none(), "rejected extract stays failed");
     }
 
     #[test]

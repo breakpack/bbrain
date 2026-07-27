@@ -132,11 +132,15 @@ async fn run_one(app: &AppHandle, job: Job) {
             JobStatus::Completed
         }
         Err(error) => {
+            // Debug format so the wrapped cause (e.g. the rusqlite error inside
+            // Storage) reaches the log — the bare code alone is undiagnosable.
+            // AppError variants carry labels and system errors, never keys or
+            // provider bodies (§16.1).
             tracing::warn!(
                 job = %job.id,
                 job_type = job.job_type.as_str(),
                 code = ?error.code(),
-                "job failed"
+                "job failed: {error:?}"
             );
             queue::fail(&conn, &job, &error).unwrap_or(JobStatus::Failed)
         }

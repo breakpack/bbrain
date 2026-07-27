@@ -125,8 +125,12 @@ export const api = {
   getPageSentences: (paperId: string, pageNumber: number) =>
     invoke<Sentence[]>("get_page_sentences", { paperId, pageNumber }),
 
-  submitExtraction: (input: { jobId: string; paperId: string; pages: ExtractedPage[] }) =>
-    invoke<void>("submit_extraction", { input }),
+  submitExtraction: (input: {
+    jobId: string;
+    paperId: string;
+    pages: ExtractedPage[];
+    detectedTitle?: string;
+  }) => invoke<void>("submit_extraction", { input }),
 
   submitThumbnail: (input: { jobId: string; paperId: string; png: number[] }) =>
     invoke<void>("submit_thumbnail", { input }),

@@ -187,18 +187,22 @@ pub async fn analyze_paper(app: &AppHandle, paper_id: &str) -> Result<()> {
         paper_repo::set_status(&conn, paper_id, paper_repo::ImportStatus::Ready)?;
 
         // Relations depend on the analysis, so they are enqueued once it lands.
+        // The version carries the analysis timestamp: a fixed version would
+        // collide with the previous run's idempotency key (even a failed one),
+        // silently suppressing the refresh after every re-analysis.
+        let followup_version = format!("{}-{}", crate::jobs::RELATIONS_VERSION, now_iso8601());
         crate::jobs::queue::enqueue(
             &conn,
             Some(paper_id),
             crate::jobs::JobType::Relations,
-            crate::jobs::RELATIONS_VERSION,
+            &followup_version,
         )?;
         if settings_repo::get(&conn)?.obsidian_vault_path.is_some() {
             crate::jobs::queue::enqueue(
                 &conn,
                 Some(paper_id),
                 crate::jobs::JobType::ObsidianSync,
-                crate::jobs::OBSIDIAN_VERSION,
+                &followup_version,
             )?;
         }
     }

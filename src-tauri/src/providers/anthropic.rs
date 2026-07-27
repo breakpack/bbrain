@@ -30,13 +30,15 @@ impl AnthropicProvider {
         }
     }
 
-    fn request(&self, url: &str) -> reqwest::RequestBuilder {
-        // `client()` is fallible, but only on TLS backend setup, which cannot
-        // fail after the first successful call; callers still handle the error.
-        reqwest::Client::new()
+    /// Generation request: long timeout, because a full analysis can generate
+    /// for minutes. `Client::new()` (no timeout at all) would let a stalled
+    /// connection pin the serial job runner forever.
+    fn request(&self, url: &str) -> Result<reqwest::RequestBuilder> {
+        Ok(client()?
             .post(url)
+            .timeout(super::GENERATION_TIMEOUT)
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", API_VERSION)
+            .header("anthropic-version", API_VERSION))
     }
 }
 
@@ -111,7 +113,7 @@ impl LlmProvider for AnthropicProvider {
         });
 
         let response = self
-            .request(MESSAGES_URL)
+            .request(MESSAGES_URL)?
             .json(&body)
             .send()
             .await
@@ -151,7 +153,7 @@ impl LlmProvider for AnthropicProvider {
         });
 
         let response = self
-            .request(MESSAGES_URL)
+            .request(MESSAGES_URL)?
             .json(&body)
             .send()
             .await

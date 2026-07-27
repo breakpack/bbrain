@@ -321,8 +321,10 @@ pub fn update(conn: &mut Connection, paper_id: &str, patch: &PaperPatch) -> Resu
     let now = now_iso8601();
 
     if let Some(title) = &patch.title {
+        // A hand-typed title outranks anything detected inside the PDF: once
+        // marked 'user', `apply_detected_title` never touches it again.
         tx.execute(
-            "UPDATE papers SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE papers SET title = ?1, title_source = 'user', updated_at = ?2 WHERE id = ?3",
             params![title, now, paper_id],
         )?;
     }
@@ -462,9 +464,44 @@ pub fn add_to_group(conn: &Connection, paper_id: &str, group_id: &str) -> Result
 
 pub fn delete(conn: &Connection, paper_id: &str) -> Result<String> {
     let path = managed_path(conn, paper_id)?;
+    // vec0 virtual tables sit outside foreign-key cascades; left behind, their
+    // rows resurface as KNN neighbours pointing at deleted papers and break
+    // the relations FOREIGN KEY. Chunk vectors go first — the cascade below
+    // removes the chunks this subquery reads.
+    conn.execute(
+        "DELETE FROM chunk_vectors
+         WHERE chunk_id IN (SELECT id FROM chunks WHERE paper_id = ?1)",
+        params![paper_id],
+    )?;
+    conn.execute(
+        "DELETE FROM paper_vectors WHERE paper_id = ?1",
+        params![paper_id],
+    )?;
     conn.execute("DELETE FROM papers WHERE id = ?1", params![paper_id])?;
     conn.execute("DELETE FROM papers_fts WHERE paper_id = ?1", params![paper_id])?;
     Ok(path)
+}
+
+/// Replaces the filename-derived placeholder with the title found inside the
+/// PDF (metadata or page-1 layout). A title the user typed always wins — rows
+/// whose `title_source` is 'user' are left untouched. Returns whether the
+/// title actually changed.
+pub fn apply_detected_title(conn: &Connection, paper_id: &str, title: &str) -> Result<bool> {
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return Ok(false);
+    }
+
+    let changed = conn.execute(
+        "UPDATE papers SET title = ?1, title_source = 'detected', updated_at = ?2
+         WHERE id = ?3 AND title_source != 'user' AND title != ?1",
+        params![title, now_iso8601(), paper_id],
+    )?;
+
+    if changed > 0 {
+        reindex_fts(conn, paper_id)?;
+    }
+    Ok(changed > 0)
 }
 
 /// FTS5 external-content tables need explicit maintenance; Bbrain keeps the
@@ -738,6 +775,75 @@ mod tests {
             .query_row("SELECT count(*) FROM papers_fts", [], |row| row.get(0))
             .unwrap();
         assert_eq!(indexed, 0);
+    }
+
+    /// PDF 안에서 찾은 제목은 파일명 유래 제목을 교체하지만, 사용자가 직접
+    /// 지은 제목은 절대 건드리지 않는다.
+    #[test]
+    fn a_detected_title_replaces_the_filename_but_never_a_user_rename() {
+        let db = Database::open_in_memory().unwrap();
+        let mut conn = db.conn();
+        seed(&conn, "p1", "downloaded file 2301.00001");
+
+        assert!(apply_detected_title(&conn, "p1", "  Attention Is\n All You Need ").unwrap());
+        assert_eq!(get(&conn, "p1").unwrap().title, "Attention Is All You Need");
+
+        // Same title again: no-op, reported as unchanged.
+        assert!(!apply_detected_title(&conn, "p1", "Attention Is All You Need").unwrap());
+
+        // The user renames the paper — a later re-extraction must not undo it.
+        update(
+            &mut conn,
+            "p1",
+            &PaperPatch {
+                title: Some("내가 정한 제목".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!apply_detected_title(&conn, "p1", "Attention Is All You Need").unwrap());
+        assert_eq!(get(&conn, "p1").unwrap().title, "내가 정한 제목");
+
+        // An empty detection never blanks the title.
+        assert!(!apply_detected_title(&conn, "p1", "   ").unwrap());
+    }
+
+    /// vec0 테이블은 FK cascade가 적용되지 않아 명시적으로 지워야 한다.
+    /// 남은 고아 벡터는 KNN 이웃으로 되살아나 relations FK 위반을 일으킨다.
+    #[test]
+    fn deleting_a_paper_removes_its_vector_rows_too() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        seed(&conn, "p1", "Paper");
+
+        let vector = crate::rag::embedder::to_blob(&vec![0.1f32; 384]);
+        conn.execute(
+            "INSERT INTO chunks (id, paper_id, page_start, page_end, text, token_count, content_hash)
+             VALUES ('c1', 'p1', 1, 1, 'text', 3, 'h')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO paper_vectors (paper_id, index_generation, embedding) VALUES ('p1', 1, ?1)",
+            params![vector],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chunk_vectors (chunk_id, index_generation, embedding) VALUES ('c1', 1, ?1)",
+            params![vector],
+        )
+        .unwrap();
+
+        delete(&conn, "p1").unwrap();
+
+        let paper_vectors: i64 = conn
+            .query_row("SELECT count(*) FROM paper_vectors", [], |row| row.get(0))
+            .unwrap();
+        let chunk_vectors: i64 = conn
+            .query_row("SELECT count(*) FROM chunk_vectors", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(paper_vectors, 0);
+        assert_eq!(chunk_vectors, 0);
     }
 
     #[test]

@@ -49,6 +49,12 @@ pub fn run() {
             // committed, so the work is safe to run again (DEVELOPMENT.md §10.1).
             jobs::queue::recover_running(&db.conn())?;
 
+            // Keychain denials, network outages and since-fixed storage bugs
+            // are gone after a relaunch — give those failures one fresh try
+            // per launch instead of leaving papers stuck in waiting_for_ai.
+            jobs::queue::recover_transient_failures(&db.conn())?;
+            jobs::queue::release_waiting_for_key(&db.conn())?;
+
             // After an extraction-format change, re-extract existing papers once
             // so a fix (e.g. two-column reading order) reaches papers imported
             // before it. Idempotency-gated, so this is a no-op on later launches.

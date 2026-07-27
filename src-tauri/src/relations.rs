@@ -95,6 +95,17 @@ fn recompute_semantic(conn: &Connection, paper_id: &str, generation: i64) -> Res
         if neighbour_id == paper_id {
             continue;
         }
+        // A stale vector (vec0 tables sit outside FK cascades) can name a
+        // deleted paper; inserting that edge would hit the relations FOREIGN
+        // KEY and fail the whole job.
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM papers WHERE id = ?1)",
+            params![neighbour_id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            continue;
+        }
         // vec0 cosine distance is 1 - similarity.
         let similarity = 1.0 - distance;
         if similarity >= SIMILARITY_THRESHOLD {
@@ -339,6 +350,30 @@ mod tests {
         remove_manual_relation(&conn, "p1", "p2").unwrap();
 
         assert!(load_graph(&conn).unwrap().edges.is_empty());
+    }
+
+    /// 삭제된 논문의 벡터가 남아 KNN 이웃으로 나와도(vec0는 FK cascade 밖)
+    /// relations 재계산이 실패하거나 없는 논문으로 엣지를 만들면 안 된다.
+    #[test]
+    fn a_stale_vector_for_a_deleted_paper_is_skipped_not_fatal() {
+        let db = seeded();
+        let conn = db.conn();
+        let vector = crate::rag::embedder::to_blob(&vec![0.5f32; 384]);
+
+        for id in ["p1", "p2", "ghost"] {
+            conn.execute(
+                "INSERT INTO paper_vectors (paper_id, index_generation, embedding)
+                 VALUES (?1, 1, ?2)",
+                params![id, vector],
+            )
+            .unwrap();
+        }
+
+        recompute_semantic(&conn, "p1", 1).unwrap();
+
+        let graph = load_graph(&conn).unwrap();
+        assert_eq!(graph.edges.len(), 1, "only the edge to the existing paper");
+        assert_eq!(graph.edges[0].target_paper_id, "p2");
     }
 
     #[test]

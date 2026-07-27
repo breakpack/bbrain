@@ -87,6 +87,7 @@ impl LlmProvider for OpenAiProvider {
         let response = client()?
             .post(RESPONSES_URL)
             .bearer_auth(&self.api_key)
+            .timeout(super::GENERATION_TIMEOUT)
             .json(&body)
             .send()
             .await
@@ -131,6 +132,7 @@ impl LlmProvider for OpenAiProvider {
         let response = client()?
             .post(RESPONSES_URL)
             .bearer_auth(&self.api_key)
+            .timeout(super::GENERATION_TIMEOUT)
             .json(&body)
             .send()
             .await

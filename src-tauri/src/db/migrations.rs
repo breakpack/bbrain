@@ -56,6 +56,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "tag_note_entries",
         sql: include_str!("../../migrations/0009_tag_note_entries.sql"),
     },
+    Migration {
+        version: 10,
+        name: "prune_orphan_vectors",
+        sql: include_str!("../../migrations/0010_prune_orphan_vectors.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "title_source",
+        sql: include_str!("../../migrations/0011_title_source.sql"),
+    },
 ];
 
 pub fn current_version(conn: &Connection) -> Result<i64> {

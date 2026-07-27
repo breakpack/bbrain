@@ -20,6 +20,9 @@ import {
   splitSentenceRanges,
   subtractRect,
   wordAtPoint,
+  detectDocumentTitle,
+  detectTitleFromItems,
+  sanitizeDetectedTitle,
   type ClientBox,
   type ExtractedItem,
 } from "./pdf";
@@ -667,5 +670,55 @@ describe("sentence boundaries", () => {
       "First sentence here.",
       "Second one follows.",
     ]);
+  });
+});
+
+describe("in-PDF title detection", () => {
+  const item = (text: string, y: number, height: number): ExtractedItem => ({
+    text,
+    hasEOL: false,
+    baseline: y * 792,
+    heightPt: height * 792,
+    left: 0.1,
+    rect: { x: 0.1, y, width: 0.5, height },
+  });
+
+  it("reads the title of a real paper", async () => {
+    const bytes = new Uint8Array(readFileSync(FIXTURE));
+    const pdf = await loadDocument(bytes);
+
+    expect(await detectDocumentTitle(pdf)).toBe("Attention Is All You Need");
+  });
+
+  it("rejects authoring-tool junk a metadata Title often carries", () => {
+    expect(sanitizeDetectedTitle("Microsoft Word - final_v3.docx")).toBeNull();
+    expect(sanitizeDetectedTitle("untitled")).toBeNull();
+    expect(sanitizeDetectedTitle("2301.00001")).toBeNull();
+    expect(sanitizeDetectedTitle("paper.pdf")).toBeNull();
+    expect(sanitizeDetectedTitle(undefined)).toBeNull();
+    expect(sanitizeDetectedTitle("  Dense  Passage\nRetrieval ")).toBe(
+      "Dense Passage Retrieval",
+    );
+  });
+
+  it("joins the consecutive large lines at the top of page 1", () => {
+    const items = [
+      item("Mitigating GPU Side-Channels via", 0.1, 0.025),
+      item("Integrated Monitoring and Response", 0.14, 0.025),
+      item("First Author, Second Author", 0.2, 0.014),
+      ...Array.from({ length: 20 }, (_, i) => item(`본문 문장 ${i}입니다.`, 0.3 + i * 0.02, 0.012)),
+    ];
+
+    expect(detectTitleFromItems(items)).toBe(
+      "Mitigating GPU Side-Channels via Integrated Monitoring and Response",
+    );
+  });
+
+  it("returns null when no line stands out from the body", () => {
+    const items = Array.from({ length: 20 }, (_, i) =>
+      item(`균일한 크기의 본문 ${i}.`, 0.1 + i * 0.02, 0.012),
+    );
+
+    expect(detectTitleFromItems(items)).toBeNull();
   });
 });

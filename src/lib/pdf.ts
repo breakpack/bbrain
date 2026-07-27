@@ -308,6 +308,95 @@ function normalizeRunning(line: string): string {
   return line.trim().replace(/\d+/g, "#").toLowerCase();
 }
 
+/**
+ * Junk a PDF's metadata Title commonly carries instead of the real title:
+ * authoring-tool defaults, leftover file names, bare identifiers.
+ */
+const TITLE_JUNK = [
+  /^untitled/i,
+  /^microsoft (word|powerpoint)/i,
+  /\.(pdf|docx?|dvi|tex|pptx?|indd|qxd)$/i,
+  /^(doi|https?)[:/]/i,
+  /^arxiv[:.]/i,
+];
+
+/** A candidate title, cleaned — or null when it cannot be trusted. */
+export function sanitizeDetectedTitle(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  if (cleaned.length < 6 || cleaned.length > 300) return null;
+  const letters = cleaned.match(/\p{L}/gu)?.length ?? 0;
+  if (letters < 4) return null;
+  if (TITLE_JUNK.some((pattern) => pattern.test(cleaned))) return null;
+  return cleaned;
+}
+
+/** Only the top part of page 1 can hold the title. */
+const TITLE_BAND_BOTTOM = 0.5;
+/** Lines within this fraction of the largest size belong to the title block. */
+const TITLE_SIZE_RATIO = 0.9;
+/** The title must be set clearly larger than the page's median text. */
+const TITLE_PROMINENCE = 1.15;
+
+/**
+ * The visually dominant text block near the top of page 1: consecutive lines
+ * set in (nearly) the page's largest font. Returns null when no line stands
+ * out from the body text — running headers and title-less scans must not
+ * produce a fake title.
+ */
+export function detectTitleFromItems(items: ExtractedItem[]): string | null {
+  const content = items.filter((item) => item.text.trim().length > 0);
+  if (content.length === 0) return null;
+
+  const heights = content.map((item) => item.rect.height).sort((a, b) => a - b);
+  const median = heights[Math.floor(heights.length / 2)];
+
+  const lines = groupIntoLines(content.filter((item) => item.rect.y < TITLE_BAND_BOTTOM))
+    .map((line) => ({
+      text: lineText(line),
+      size: Math.max(...line.items.map((item) => item.rect.height)),
+    }))
+    .filter((line) => line.text.length >= 4 && /\p{L}/u.test(line.text));
+  if (lines.length === 0) return null;
+
+  const largest = Math.max(...lines.map((line) => line.size));
+  if (largest < median * TITLE_PROMINENCE) return null;
+
+  const isTitleSized = (size: number) => size >= largest * TITLE_SIZE_RATIO;
+  const start = lines.findIndex((line) => isTitleSized(line.size));
+  const picked: string[] = [];
+  for (let i = start; i < lines.length && isTitleSized(lines[i].size); i++) {
+    picked.push(lines[i].text);
+  }
+  return sanitizeDetectedTitle(picked.join(" "));
+}
+
+/**
+ * The paper's own title: metadata Title when sane, else the dominant text
+ * block at the top of page 1. Returns null when neither can be trusted — the
+ * caller then keeps the filename-derived title.
+ */
+export async function detectDocumentTitle(pdf: PDFDocumentProxy): Promise<string | null> {
+  let fromMetadata: string | null = null;
+  try {
+    // pdf.js 6's getMetadata throws *synchronously* on runtimes without
+    // `Map.getOrInsertComputed` (WKWebView, Node) — try/catch, not .catch().
+    const metadata = await pdf.getMetadata();
+    const info = metadata?.info as { Title?: unknown } | undefined;
+    fromMetadata = sanitizeDetectedTitle(info?.Title);
+  } catch {
+    // Metadata is a shortcut, not a requirement — fall through to layout.
+  }
+  if (fromMetadata) return fromMetadata;
+
+  const page = await pdf.getPage(1);
+  try {
+    return detectTitleFromItems(await extractItems(page));
+  } finally {
+    page.cleanup();
+  }
+}
+
 export type PageSentence = {
   orderIndex: number;
   /** Sentences sharing a paragraphIndex belong to the same paragraph. */

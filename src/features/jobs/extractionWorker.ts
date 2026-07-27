@@ -1,7 +1,13 @@
 import { listen } from "@tauri-apps/api/event";
 
 import { api } from "@/lib/ipc";
-import { destroyDocument, extractPage, findRepeatedLines, loadDocument } from "@/lib/pdf";
+import {
+  destroyDocument,
+  detectDocumentTitle,
+  extractPage,
+  findRepeatedLines,
+  loadDocument,
+} from "@/lib/pdf";
 import type { ExtractedPage, FrontendJobRequest } from "@/lib/types";
 
 const THUMBNAIL_WIDTH = 240;
@@ -81,10 +87,15 @@ async function runExtraction(request: FrontendJobRequest): Promise<void> {
       }
     }
 
+    // The paper names itself: its in-PDF title replaces the filename-derived
+    // placeholder. Detection failure is not an extraction failure.
+    const detectedTitle = await detectDocumentTitle(pdf).catch(() => null);
+
     await api.submitExtraction({
       jobId: request.jobId,
       paperId: request.paperId,
       pages,
+      detectedTitle: detectedTitle ?? undefined,
     });
   } finally {
     await destroyDocument(pdf);
