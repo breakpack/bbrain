@@ -315,7 +315,8 @@ fn instructions(page_count: i64, language: &str, existing_tags: &[String]) -> St
     };
     let tag_rule = format!(
         "\n\n{existing_tags_note}이 목록에 같은 개념이 있으면 반드시 같은 표기를 재사용하고, \
-         목록에 없는 새로운 개념일 때만 새 태그를 만드세요. 각 suggestedTag마다 tagInsights에 \
+         목록에 없는 새로운 개념일 때만 새 태그를 만드세요. 태그는 1~3단어의 짧은 개념어로만 \
+         짓고, 문장이나 긴 구절을 태그로 만들지 마세요. 각 suggestedTag마다 tagInsights에 \
          이 논문에서 그 개념이 무엇이고 어떻게 쓰이는지를 1~3문장으로 쓰고 evidencePages에 \
          근거 페이지를 넣으세요."
     );

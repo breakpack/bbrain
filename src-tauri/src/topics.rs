@@ -1,38 +1,37 @@
-//! Topic graph — the "second brain". Instead of one node per paper, this builds
-//! a graph of concepts extracted from each paper's AI analysis (its keywords and
-//! suggested tags, which the model already distilled from the summary). Candidate
-//! topics are merged across the whole library by embedding similarity, so
-//! "Transformer", "Transformers", and "트랜스포머" collapse into one concept. The
-//! graph is a derived cache: it is rebuilt whenever the set of analyses changes.
+//! Topic graph — the "second brain". One node per **tag actually attached to a
+//! paper** (`tags` × `paper_tags`), so the graph, the tag chips on each paper,
+//! and the per-tag concept notes (`tag_note_entries`) all describe the same
+//! rows. Edges are relatedness: co-occurrence (tags on the same paper) plus
+//! embedding similarity between tag labels. Before each rebuild, duplicate
+//! tags are merged *in the database* — "Transformer"/"Transformers"/casing
+//! variants collapse into one tag, and their concept-note entries move with
+//! them. The graph is a derived cache, rebuilt whenever tags change.
 //!
 //! Everything here is local and free — it reuses the on-device embedding model,
 //! never a provider (§12).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::analysis::schema::PaperAnalysisV1;
-use crate::db::{page_repo, settings_repo};
+use crate::db::page_repo;
 use crate::error::{AppError, Result};
 use crate::ids::new_id;
 use crate::rag::embedder::cosine;
 use crate::state::AppState;
 use crate::time::now_iso8601;
 
-/// Two candidate topics merge into one concept when their embeddings are at least
-/// this similar. High enough that distinct concepts stay apart, low enough to
-/// catch plurals, casing, and cross-language synonyms.
-const MERGE_THRESHOLD: f32 = 0.85;
-/// Two distinct concepts get a "semantic" edge when their centroids are this
+/// Two tags are the same concept — and are merged in the DB — when their
+/// embeddings are at least this similar. Stricter than a display-only merge
+/// would be, because this one rewrites rows.
+const TAG_MERGE_THRESHOLD: f32 = 0.88;
+/// Two distinct concepts get a "semantic" edge when their embeddings are this
 /// close — conceptually related even if never discussed in the same paper.
 const SEMANTIC_THRESHOLD: f32 = 0.80;
 /// Cap semantic edges per topic so the graph stays legible.
 const MAX_SEMANTIC_NEIGHBORS: usize = 4;
-/// Ignore one-character candidates — they are noise, not concepts.
-const MIN_LABEL_CHARS: usize = 2;
 
 // --- wire types --------------------------------------------------------------
 
@@ -68,39 +67,43 @@ pub struct TopicGraph {
     pub edges: Vec<TopicEdge>,
 }
 
-// --- extraction & clustering (pure) ------------------------------------------
+// --- tag units & duplicate merging -------------------------------------------
 
-/// Lowercased, whitespace-collapsed form used to key and merge identical strings.
+/// Lowercased, whitespace-collapsed form stored in `topics.normalized`.
 fn normalize(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
-/// The concept candidates a paper contributes: the keywords and suggested tags
-/// its analysis already distilled from the summary.
-fn extract_candidates(analysis: &PaperAnalysisV1) -> Vec<String> {
-    analysis
-        .keywords
-        .iter()
-        .chain(analysis.suggested_tags.iter())
-        .map(|s| s.trim().to_string())
-        .filter(|s| s.chars().count() >= MIN_LABEL_CHARS)
-        .collect()
+/// Aggressive form for duplicate detection: unicode alphanumerics only,
+/// lowercased, with one trailing ASCII plural 's' stripped — "Transformers",
+/// "transformer" and "Trans-former" share a key. Korean/CJK labels pass
+/// through with only spacing/punctuation removed.
+fn aggressive_key(label: &str) -> String {
+    let mut key: String = label
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    if key.len() > 3 && key.is_ascii() && key.ends_with('s') && !key.ends_with("ss") {
+        key.pop();
+    }
+    key
 }
 
-/// One distinct candidate string and the papers it appears in.
+/// One graph node in the making: a tag and the papers it is attached to.
 #[derive(Debug, Clone)]
-struct UniqueTopic {
+struct TagUnit {
+    tag_id: String,
     label: String,
+    source: String,
     papers: Vec<String>,
 }
 
-/// A merged concept: a representative label, the union of member papers, and the
-/// centroid of member embeddings.
+/// A node ready to persist: label, member papers, and the label's embedding.
 #[derive(Debug, Clone)]
 struct Cluster {
     label: String,
     papers: BTreeSet<String>,
-    sum: Vec<f32>,
     centroid: Vec<f32>,
 }
 
@@ -112,42 +115,133 @@ fn normalized(vector: &[f32]) -> Vec<f32> {
     vector.iter().map(|v| v / norm).collect()
 }
 
-/// Greedy single-pass clustering: candidates are visited most-frequent first (so
-/// popular concepts seed clusters and lend their label), and each joins the
-/// nearest existing cluster above the merge threshold, or starts its own.
-fn cluster(unique: &[UniqueTopic], vectors: &[Vec<f32>], threshold: f32) -> Vec<Cluster> {
-    let mut clusters: Vec<Cluster> = Vec::new();
+/// Tags in "representative first" order: a tag the user made outranks an AI
+/// one, then more papers, then the shorter (and stable) label. The first tag
+/// of any duplicate group keeps its name; the rest merge into it.
+fn load_tag_units(conn: &Connection) -> Result<Vec<TagUnit>> {
+    let mut statement = conn.prepare(
+        "SELECT t.id, t.display_name, t.source, pt.paper_id
+         FROM tags t
+         JOIN paper_tags pt ON pt.tag_id = t.id
+         JOIN papers p ON p.id = pt.paper_id
+         ORDER BY t.id, pt.paper_id",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    for (index, topic) in unique.iter().enumerate() {
-        let vector = &vectors[index];
-
-        let mut best: Option<(usize, f32)> = None;
-        for (ci, existing) in clusters.iter().enumerate() {
-            let similarity = cosine(&existing.centroid, vector);
-            if similarity >= threshold && best.map_or(true, |(_, s)| similarity > s) {
-                best = Some((ci, similarity));
-            }
-        }
-
-        match best {
-            Some((ci, _)) => {
-                let cluster = &mut clusters[ci];
-                for (a, b) in cluster.sum.iter_mut().zip(vector) {
-                    *a += b;
-                }
-                cluster.centroid = normalized(&cluster.sum);
-                cluster.papers.extend(topic.papers.iter().cloned());
-            }
-            None => clusters.push(Cluster {
-                label: topic.label.clone(),
-                papers: topic.papers.iter().cloned().collect(),
-                sum: vector.clone(),
-                centroid: normalized(vector),
+    let mut units: Vec<TagUnit> = Vec::new();
+    for (tag_id, label, source, paper_id) in rows {
+        match units.last_mut() {
+            Some(unit) if unit.tag_id == tag_id => unit.papers.push(paper_id),
+            _ => units.push(TagUnit {
+                tag_id,
+                label,
+                source,
+                papers: vec![paper_id],
             }),
         }
     }
 
-    clusters
+    units.sort_by(|a, b| {
+        (b.source == "user")
+            .cmp(&(a.source == "user"))
+            .then(b.papers.len().cmp(&a.papers.len()))
+            .then(a.label.chars().count().cmp(&b.label.chars().count()))
+            .then(a.label.cmp(&b.label))
+    });
+    Ok(units)
+}
+
+/// Duplicate groups among `units` (which must already be representative-first):
+/// same aggressive key, or label embeddings above the merge threshold. Each
+/// group's first index is the tag that survives. Pure, so the policy is
+/// testable without the embedding model.
+fn duplicate_groups(units: &[TagUnit], vectors: &[Vec<f32>]) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut key_of_group: Vec<String> = Vec::new();
+
+    for (index, unit) in units.iter().enumerate() {
+        let key = aggressive_key(&unit.label);
+
+        let mut joined = false;
+        for (gi, group) in groups.iter_mut().enumerate() {
+            let same_key = !key.is_empty() && key_of_group[gi] == key;
+            let similar = cosine(&vectors[group[0]], &vectors[index]) >= TAG_MERGE_THRESHOLD;
+            if same_key || similar {
+                group.push(index);
+                joined = true;
+                break;
+            }
+        }
+        if !joined {
+            groups.push(vec![index]);
+            key_of_group.push(key);
+        }
+    }
+
+    groups
+}
+
+/// Folds a duplicate tag into its representative: papers move over, concept-
+/// note entries move with the newer insight winning per paper, and the
+/// duplicate row is deleted (its remaining children cascade away).
+fn merge_tag_into(conn: &Connection, keep_id: &str, dup_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO paper_tags (paper_id, tag_id)
+         SELECT paper_id, ?1 FROM paper_tags WHERE tag_id = ?2",
+        params![keep_id, dup_id],
+    )?;
+    conn.execute(
+        "INSERT INTO tag_note_entries (tag_id, paper_id, insight_md, evidence_pages, updated_at)
+         SELECT ?1, paper_id, insight_md, evidence_pages, updated_at
+         FROM tag_note_entries WHERE tag_id = ?2
+         ON CONFLICT(tag_id, paper_id) DO UPDATE SET
+           insight_md = excluded.insight_md,
+           evidence_pages = excluded.evidence_pages,
+           updated_at = excluded.updated_at
+         WHERE excluded.updated_at > tag_note_entries.updated_at",
+        params![keep_id, dup_id],
+    )?;
+    conn.execute("DELETE FROM tags WHERE id = ?1", params![dup_id])?;
+    Ok(())
+}
+
+/// Merges duplicate tags across the library (사용자 요청: 중복 태그 정리).
+/// Returns the number of tags folded away. CPU-bound (embedding).
+fn merge_duplicate_tags(state: &AppState) -> Result<usize> {
+    let units = {
+        let conn = state.db.conn();
+        load_tag_units(&conn)?
+    };
+    if units.len() < 2 {
+        return Ok(0);
+    }
+
+    let labels: Vec<String> = units.iter().map(|unit| unit.label.clone()).collect();
+    let vectors = state.embedder.embed_passages(&labels)?;
+    let vectors: Vec<Vec<f32>> = vectors.iter().map(|v| normalized(v)).collect();
+
+    let mut merged = 0;
+    let conn = state.db.conn();
+    for group in duplicate_groups(&units, &vectors) {
+        let keep = &units[group[0]];
+        for &dup_index in &group[1..] {
+            merge_tag_into(&conn, &keep.tag_id, &units[dup_index].tag_id)?;
+            merged += 1;
+        }
+    }
+    if merged > 0 {
+        tracing::info!(merged, "folded duplicate tags into their representatives");
+    }
+    Ok(merged)
 }
 
 /// Co-occurrence edges: two topics are linked with weight = the number of papers
@@ -211,31 +305,35 @@ fn semantic_edges(
 
 // --- rebuild & load ----------------------------------------------------------
 
-/// A fingerprint of everything the topic graph is derived from, so a rebuild is
-/// skipped when nothing relevant has changed.
+/// A fingerprint of everything the topic graph is derived from — the tags and
+/// which papers carry them — so a rebuild is skipped when nothing relevant has
+/// changed. JOIN papers so a row orphaned before FK enforcement can neither
+/// enter the signature nor the rebuild.
 fn signature(conn: &Connection) -> Result<String> {
-    let generation = settings_repo::get(conn)?.index_generation;
-
-    // JOIN papers: an orphaned analysis (its paper deleted while foreign keys
-    // were off, e.g. rows from early dev builds) must neither enter the
-    // signature nor the rebuild — inserting its topics violates the
-    // paper_topics FK and kills the whole graph page.
     let mut statement = conn.prepare(
-        "SELECT a.paper_id, a.content_hash FROM analyses a
-         JOIN papers p ON p.id = a.paper_id
-         ORDER BY a.paper_id",
+        "SELECT t.id, t.display_name, pt.paper_id
+         FROM tags t
+         JOIN paper_tags pt ON pt.tag_id = t.id
+         JOIN papers p ON p.id = pt.paper_id
+         ORDER BY t.id, pt.paper_id",
     )?;
     let rows = statement
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let mut material = format!("gen={generation};");
-    for (paper_id, hash) in rows {
-        material.push_str(&paper_id);
+    let mut material = String::from("tags-v2;");
+    for (tag_id, label, paper_id) in rows {
+        material.push_str(&tag_id);
         material.push(':');
-        material.push_str(&hash);
+        material.push_str(&label);
+        material.push(':');
+        material.push_str(&paper_id);
         material.push(';');
     }
     Ok(page_repo::text_hash(&material))
@@ -249,65 +347,36 @@ fn stored_signature(conn: &Connection) -> Result<Option<String>> {
         .optional()?)
 }
 
-/// Rebuilds the topic graph from every analysis in the library and persists it.
-/// CPU-bound (embedding), so callers run it off the async runtime.
+/// Rebuilds the topic graph from the tags attached to papers and persists it.
+/// Duplicate tags are merged in the database first, so the graph, the tag
+/// chips, and the concept notes stay one row per concept. CPU-bound
+/// (embedding), so callers run it off the async runtime.
 fn rebuild_blocking(app: &AppHandle) -> Result<()> {
     let state = app.state::<AppState>();
 
-    let (analyses, sig) = {
+    merge_duplicate_tags(&state)?;
+
+    // Read (and fingerprint) the post-merge state, so the stored signature
+    // matches what the next load computes and the rebuild is not repeated.
+    let (units, sig) = {
         let conn = state.db.conn();
-        // Same JOIN as signature(): only analyses whose paper still exists.
-        let mut statement = conn.prepare(
-            "SELECT a.paper_id, a.structured_json FROM analyses a
-             JOIN papers p ON p.id = a.paper_id",
-        )?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let analyses: Vec<(String, PaperAnalysisV1)> = rows
-            .into_iter()
-            .filter_map(|(paper_id, json)| {
-                serde_json::from_str::<PaperAnalysisV1>(&json)
-                    .ok()
-                    .map(|analysis| (paper_id, analysis))
-            })
-            .collect();
-        (analyses, signature(&conn)?)
+        (load_tag_units(&conn)?, signature(&conn)?)
     };
 
-    // Aggregate identical candidate strings across the library.
-    let mut aggregate: BTreeMap<String, (String, BTreeSet<String>)> = BTreeMap::new();
-    for (paper_id, analysis) in &analyses {
-        for candidate in extract_candidates(analysis) {
-            let key = normalize(&candidate);
-            if key.is_empty() {
-                continue;
-            }
-            let entry = aggregate
-                .entry(key)
-                .or_insert_with(|| (candidate.clone(), BTreeSet::new()));
-            entry.1.insert(paper_id.clone());
-        }
-    }
-
-    let mut unique: Vec<UniqueTopic> = aggregate
-        .into_iter()
-        .map(|(_, (label, papers))| UniqueTopic {
-            label,
-            papers: papers.into_iter().collect(),
-        })
-        .collect();
-    // Most-frequent first so popular concepts seed clusters; stable tiebreak.
-    unique.sort_by(|a, b| b.papers.len().cmp(&a.papers.len()).then(a.label.cmp(&b.label)));
-
-    let clusters = if unique.is_empty() {
+    let clusters: Vec<Cluster> = if units.is_empty() {
         Vec::new()
     } else {
-        let labels: Vec<String> = unique.iter().map(|topic| topic.label.clone()).collect();
+        let labels: Vec<String> = units.iter().map(|unit| unit.label.clone()).collect();
         let vectors = state.embedder.embed_passages(&labels)?;
-        cluster(&unique, &vectors, MERGE_THRESHOLD)
+        units
+            .iter()
+            .zip(vectors)
+            .map(|(unit, vector)| Cluster {
+                label: unit.label.clone(),
+                papers: unit.papers.iter().cloned().collect(),
+                centroid: normalized(&vector),
+            })
+            .collect()
     };
 
     let cooccurrence = cooccurrence_edges(&clusters);
@@ -465,94 +534,157 @@ pub async fn ensure_and_load(app: &AppHandle, force: bool) -> Result<TopicGraph>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::schema::PaperAnalysisV1;
+    use crate::db::paper_repo::{self, ImportStatus};
+    use crate::db::Database;
 
-    fn analysis(keywords: &[&str], tags: &[&str]) -> PaperAnalysisV1 {
-        PaperAnalysisV1 {
-            schema_version: "1".into(),
-            short_summary: String::new(),
-            detailed_summary: String::new(),
-            research_problem: String::new(),
-            contributions: vec![],
-            methodology: String::new(),
-            results: vec![],
-            limitations: vec![],
-            keywords: keywords.iter().map(|s| s.to_string()).collect(),
-            suggested_tags: tags.iter().map(|s| s.to_string()).collect(),
-            tag_insights: vec![],
-            follow_up_questions: vec![],
-        }
+    fn seed_paper(conn: &Connection, id: &str) {
+        paper_repo::insert(conn, id, id, "/tmp/x.pdf", "Paper", ImportStatus::Ready).unwrap();
     }
 
-    fn unit(label: &str, papers: &[&str]) -> UniqueTopic {
-        UniqueTopic {
+    fn tag_on(conn: &Connection, paper_id: &str, label: &str, source: &str) -> String {
+        let tag_id = paper_repo::upsert_tag(conn, label, source).unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO paper_tags (paper_id, tag_id) VALUES (?1, ?2)",
+            params![paper_id, tag_id],
+        )
+        .unwrap();
+        tag_id
+    }
+
+    fn unit(label: &str, source: &str, papers: &[&str]) -> TagUnit {
+        TagUnit {
+            tag_id: format!("id-{label}"),
             label: label.into(),
+            source: source.into(),
             papers: papers.iter().map(|s| s.to_string()).collect(),
         }
     }
 
     #[test]
-    fn an_orphaned_analysis_does_not_enter_the_signature() {
-        // A paper deleted while foreign keys were off (early dev builds) leaves
-        // its analysis behind; rebuilding from it violates the paper_topics FK
-        // and takes the whole graph page down. The signature — and therefore
-        // the rebuild input — must only see analyses whose paper still exists.
-        let db = crate::db::Database::open_in_memory().unwrap();
-        let conn = db.conn();
+    fn aggressive_keys_collapse_case_punctuation_and_ascii_plurals() {
+        assert_eq!(aggressive_key("Transformers"), aggressive_key("transformer"));
+        assert_eq!(aggressive_key("Self-Attention"), aggressive_key("self attention"));
+        assert_eq!(aggressive_key("RAG"), "rag");
+        // Double-s words are not plurals; Korean is left intact.
+        assert_eq!(aggressive_key("loss"), "loss");
+        assert_eq!(aggressive_key("어텐션"), "어텐션");
+        assert_ne!(aggressive_key("RAG"), aggressive_key("Attention"));
+    }
 
-        conn.execute_batch(
-            "INSERT INTO papers (id, sha256, title, managed_path, import_status, page_count,
-                                 is_favorite, created_at, updated_at)
-             VALUES ('p1', 'h1', 'Alive', '/x', 'ready', 1, 0, '2026-01-01', '2026-01-01');
-             INSERT INTO analyses (paper_id, schema_version, provider, model, content_hash,
-                                   structured_json, markdown, created_at)
-             VALUES ('p1', '1', 'anthropic', 'm', 'hash-alive', '{}', '', '2026-01-01');
-             PRAGMA foreign_keys = OFF;
-             INSERT INTO analyses (paper_id, schema_version, provider, model, content_hash,
-                                   structured_json, markdown, created_at)
-             VALUES ('ghost', '1', 'anthropic', 'm', 'hash-ghost', '{}', '', '2026-01-01');
-             PRAGMA foreign_keys = ON;",
+    #[test]
+    fn duplicate_groups_merge_by_key_or_embedding_and_keep_the_representative_first() {
+        // Representative-first order: the user's tag leads.
+        let units = vec![
+            unit("attention", "user", &["p1"]),
+            unit("Attentions", "ai", &["p2"]),    // same aggressive key
+            unit("어텐션", "ai", &["p3"]),         // same only by embedding
+            unit("photosynthesis", "ai", &["p4"]), // unrelated
+        ];
+        let vectors = vec![
+            vec![1.0, 0.0],
+            vec![1.0, 0.0],
+            normalized(&[0.95, 0.05]),
+            vec![0.0, 1.0],
+        ];
+
+        let groups = duplicate_groups(&units, &vectors);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0], vec![0, 1, 2], "all three attention variants fold into the user's tag");
+        assert_eq!(groups[1], vec![3]);
+    }
+
+    #[test]
+    fn merging_a_tag_moves_papers_and_notes_and_the_newer_insight_wins() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        seed_paper(&conn, "p1");
+        seed_paper(&conn, "p2");
+        let keep = tag_on(&conn, "p1", "attention", "user");
+        let dup = tag_on(&conn, "p2", "Attentions", "ai");
+        // p1 carries both spellings; the note on the duplicate is newer.
+        conn.execute(
+            "INSERT OR IGNORE INTO paper_tags (paper_id, tag_id) VALUES ('p1', ?1)",
+            params![dup],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tag_note_entries (tag_id, paper_id, insight_md, evidence_pages, updated_at)
+             VALUES (?1, 'p1', '옛 설명', '[1]', '2026-01-01T00:00:00Z'),
+                    (?2, 'p1', '새 설명', '[2]', '2026-06-01T00:00:00Z'),
+                    (?2, 'p2', '다른 논문 설명', '[3]', '2026-06-01T00:00:00Z')",
+            params![keep, dup],
         )
         .unwrap();
 
-        let with_ghost = signature(&conn).unwrap();
-        conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
-        conn.execute("DELETE FROM analyses WHERE paper_id = 'ghost'", []).unwrap();
-        conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
-        let without_ghost = signature(&conn).unwrap();
+        merge_tag_into(&conn, &keep, &dup).unwrap();
 
-        assert_eq!(with_ghost, without_ghost, "orphan must be invisible to the signature");
+        let tags: i64 = conn.query_row("SELECT count(*) FROM tags", [], |r| r.get(0)).unwrap();
+        assert_eq!(tags, 1, "the duplicate row is gone");
+
+        let papers: Vec<String> = conn
+            .prepare("SELECT paper_id FROM paper_tags WHERE tag_id = ?1 ORDER BY paper_id")
+            .unwrap()
+            .query_map(params![keep], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(papers, vec!["p1", "p2"], "both papers now carry the surviving tag");
+
+        let notes: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT paper_id, insight_md FROM tag_note_entries
+                 WHERE tag_id = ?1 ORDER BY paper_id",
+            )
+            .unwrap()
+            .query_map(params![keep], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            notes,
+            vec![
+                ("p1".into(), "새 설명".into()),
+                ("p2".into(), "다른 논문 설명".into())
+            ],
+            "notes follow the merge and the newer insight wins per paper"
+        );
     }
 
     #[test]
-    fn candidates_come_from_keywords_and_tags_and_skip_noise() {
-        let a = analysis(&["Transformer", "Attention", "x"], &["nlp", " "]);
-        let candidates = extract_candidates(&a);
-        assert!(candidates.contains(&"Transformer".to_string()));
-        assert!(candidates.contains(&"nlp".to_string()));
-        assert!(!candidates.iter().any(|c| c == "x"), "one-char candidate is dropped");
-        assert!(!candidates.iter().any(|c| c.trim().is_empty()));
+    fn tag_units_come_from_paper_tags_in_representative_first_order() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        seed_paper(&conn, "p1");
+        seed_paper(&conn, "p2");
+        tag_on(&conn, "p1", "popular ai tag", "ai");
+        tag_on(&conn, "p2", "popular ai tag", "ai");
+        tag_on(&conn, "p2", "user tag", "user");
+        // A tag attached to nothing is not a node.
+        paper_repo::upsert_tag(&conn, "unattached", "ai").unwrap();
+
+        let units = load_tag_units(&conn).unwrap();
+
+        let labels: Vec<&str> = units.iter().map(|u| u.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["user tag", "popular ai tag"],
+            "user tags lead, unattached tags are absent"
+        );
+        assert_eq!(units[1].papers.len(), 2);
     }
 
     #[test]
-    fn near_vectors_merge_into_one_concept() {
-        // Two labels with nearly identical vectors merge; a distant one stays apart.
-        let unique = vec![
-            unit("Transformer", &["p1"]),
-            unit("Transformers", &["p2"]),
-            unit("Photosynthesis", &["p3"]),
-        ];
-        let vectors = vec![
-            vec![1.0, 0.0, 0.0],
-            vec![0.99, 0.01, 0.0],
-            vec![0.0, 1.0, 0.0],
-        ];
+    fn the_signature_tracks_tag_attachments() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        seed_paper(&conn, "p1");
+        let before = signature(&conn).unwrap();
 
-        let clusters = cluster(&unique, &vectors, 0.85);
+        tag_on(&conn, "p1", "attention", "ai");
+        let after = signature(&conn).unwrap();
 
-        assert_eq!(clusters.len(), 2, "the two transformer variants merge");
-        let transformer = clusters.iter().find(|c| c.papers.contains("p1")).unwrap();
-        assert!(transformer.papers.contains("p2"), "merged cluster carries both papers");
+        assert_ne!(before, after, "attaching a tag must trigger a rebuild");
     }
 
     #[test]
@@ -561,13 +693,11 @@ mod tests {
             Cluster {
                 label: "A".into(),
                 papers: ["p1", "p2"].iter().map(|s| s.to_string()).collect(),
-                sum: vec![1.0, 0.0],
                 centroid: vec![1.0, 0.0],
             },
             Cluster {
                 label: "B".into(),
                 papers: ["p1", "p2", "p3"].iter().map(|s| s.to_string()).collect(),
-                sum: vec![0.0, 1.0],
                 centroid: vec![0.0, 1.0],
             },
         ];
@@ -584,13 +714,11 @@ mod tests {
             Cluster {
                 label: "A".into(),
                 papers: BTreeSet::new(),
-                sum: vec![1.0, 0.0],
                 centroid: vec![1.0, 0.0],
             },
             Cluster {
                 label: "B".into(),
                 papers: BTreeSet::new(),
-                sum: vec![0.99, 0.01],
                 centroid: normalized(&[0.99, 0.01]),
             },
         ];

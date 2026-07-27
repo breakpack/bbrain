@@ -5,6 +5,19 @@ use crate::error::{AppError, Result};
 
 pub const SCHEMA_VERSION: &str = "1";
 
+/// A tag is a short concept label, not a sentence — anything longer than this
+/// is almost certainly a phrase and is dropped rather than becoming an
+/// unreadable graph node (사용자 요청: 태그 이름이 길어지면 안 됨).
+pub const MAX_TAG_CHARS: usize = 36;
+const MAX_TAG_WORDS: usize = 4;
+
+fn tag_is_reasonable(tag: &str) -> bool {
+    let tag = tag.trim();
+    !tag.is_empty()
+        && tag.chars().count() <= MAX_TAG_CHARS
+        && tag.split_whitespace().count() <= MAX_TAG_WORDS
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Claim {
@@ -154,15 +167,15 @@ pub fn validate(value: serde_json::Value, page_count: i64) -> Result<PaperAnalys
         result.evidence_pages.dedup();
     }
 
-    analysis.suggested_tags.retain(|tag| !tag.trim().is_empty());
+    analysis.suggested_tags.retain(|tag| tag_is_reasonable(tag));
     analysis.keywords.retain(|keyword| !keyword.trim().is_empty());
 
-    // Tag insights feed the concept notes: drop blanks, clamp evidence, and
-    // make sure every explained tag is also a suggested tag (the note is keyed
-    // by the tag row the analysis creates).
+    // Tag insights feed the concept notes: drop blanks and over-long tags,
+    // clamp evidence, and make sure every explained tag is also a suggested
+    // tag (the note is keyed by the tag row the analysis creates).
     analysis
         .tag_insights
-        .retain(|item| !item.tag.trim().is_empty() && !item.insight.trim().is_empty());
+        .retain(|item| tag_is_reasonable(&item.tag) && !item.insight.trim().is_empty());
     for item in &mut analysis.tag_insights {
         item.evidence_pages.retain(in_range);
         item.evidence_pages.sort_unstable();
@@ -272,6 +285,32 @@ mod tests {
         // An insight for a tag missing from suggestedTags promotes that tag,
         // so its concept-note entry always has a tag row to attach to.
         assert!(analysis.suggested_tags.iter().any(|t| t == "Attention"));
+    }
+
+    /// 태그는 짧은 개념어여야 한다 — 문장형 태그는 그래프 노드를 못 읽게
+    /// 만들므로 검증 단계에서 버린다.
+    #[test]
+    fn over_long_tags_are_dropped_not_stored() {
+        let mut long = payload();
+        long["suggestedTags"] = serde_json::json!([
+            "RAG",
+            "a suggested tag that is way too long to be a concept label",
+            "one two three four five"
+        ]);
+        long["tagInsights"] = serde_json::json!([
+            { "tag": "RAG", "insight": "짧은 개념", "evidencePages": [1] },
+            {
+                "tag": "a tag phrase far exceeding any reasonable label length limit",
+                "insight": "버려져야 한다",
+                "evidencePages": [1]
+            }
+        ]);
+
+        let analysis = validate(long, 10).unwrap();
+
+        assert_eq!(analysis.suggested_tags, vec!["RAG"]);
+        assert_eq!(analysis.tag_insights.len(), 1);
+        assert_eq!(analysis.tag_insights[0].tag, "RAG");
     }
 
     #[test]
