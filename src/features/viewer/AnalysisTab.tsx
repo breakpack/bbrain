@@ -1,11 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { listen } from "@tauri-apps/api/event";
 import { RefreshCw } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { CardDescription } from "@/components/ui/Card";
 import { api, errorMessage } from "@/lib/ipc";
-import type { Claim, Finding } from "@/lib/types";
+import type { Claim, Finding, JobProgress } from "@/lib/types";
 
 /**
  * Rendered from the validated JSON, not from model-authored Markdown, and every
@@ -20,6 +22,38 @@ export function AnalysisTab({
 }) {
   const client = useQueryClient();
 
+  // "다시 분석" enqueues a background job — the IPC call returns immediately,
+  // long before the analysis exists. `analyzing` keeps the tab in its loading
+  // state from the button press until the job's terminal progress event, so
+  // the stale analysis is not shown as if it were the new one.
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!analyzing) return;
+
+    const off = listen<JobProgress>("job://progress", (event) => {
+      const job = event.payload;
+      if (job.paperId !== paperId || job.jobType !== "analyze") return;
+
+      if (job.status === "completed") {
+        setAnalyzing(false);
+        void client.invalidateQueries({ queryKey: ["analysis", paperId] });
+      } else if (job.status === "failed" || job.status === "waiting_for_key") {
+        setAnalyzing(false);
+        setAnalyzeError(
+          job.status === "waiting_for_key"
+            ? "API 키를 사용할 수 없어 분석이 대기 중입니다. 설정에서 키를 확인한 뒤 다시 시도하세요."
+            : "분석에 실패했습니다. 잠시 후 다시 분석을 눌러 재시도하세요.",
+        );
+      }
+    });
+
+    return () => {
+      void off.then((fn) => fn());
+    };
+  }, [analyzing, client, paperId]);
+
   const analysis = useQuery({
     queryKey: ["analysis", paperId],
     queryFn: () => api.getAnalysis(paperId),
@@ -27,12 +61,18 @@ export function AnalysisTab({
 
   const reanalyze = useMutation({
     mutationFn: () => api.reanalyzePaper(paperId),
-    onSuccess: () => client.invalidateQueries({ queryKey: ["analysis", paperId] }),
+    onMutate: () => setAnalyzeError(null),
+    onSuccess: () => setAnalyzing(true),
   });
 
-  if (analysis.isPending) {
+  if (analysis.isPending || analyzing) {
     return (
-      <div className="flex flex-col gap-sm p-md" aria-busy="true" aria-label="불러오는 중">
+      <div className="flex flex-col gap-sm p-md" aria-busy="true" aria-label="분석 중">
+        {analyzing && (
+          <p className="text-caption text-ink-body">
+            논문을 분석하고 있습니다. 논문 길이에 따라 몇 분이 걸릴 수 있습니다.
+          </p>
+        )}
         {[0, 1, 2].map((row) => (
           <div key={row} className="h-20 animate-pulse rounded-sm bg-canvas-soft" />
         ))}
@@ -53,9 +93,9 @@ export function AnalysisTab({
             지금 분석
           </Button>
         </div>
-        {reanalyze.isError && (
+        {(reanalyze.isError || analyzeError) && (
           <p role="alert" className="text-caption text-danger">
-            {errorMessage(reanalyze.error)}
+            {analyzeError ?? errorMessage(reanalyze.error)}
           </p>
         )}
       </div>
@@ -66,6 +106,12 @@ export function AnalysisTab({
 
   return (
     <div className="flex flex-col gap-lg p-md">
+      {(reanalyze.isError || analyzeError) && (
+        <p role="alert" className="text-caption text-danger">
+          {analyzeError ?? errorMessage(reanalyze.error)}
+        </p>
+      )}
+
       <Section title="요약">
         <p className="text-caption text-ink">{data.shortSummary}</p>
         {data.detailedSummary && (
