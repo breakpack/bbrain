@@ -20,6 +20,9 @@
   --color-subhead: #c2c2c2;
 
   --color-line: #ececef;
+  /* The graph canvas is the one deliberately dark surface — an Obsidian-style
+     void that makes the glowing concept dots legible (DESIGN.md §12.2). */
+  --color-graph-void: #121212;
   /* Error color is used only where accessibility requires it (DEVELOPMENT.md §15) */
   --color-danger: #d33a3a;
 

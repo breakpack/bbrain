@@ -16,6 +16,7 @@ export default {
           soft: "var(--color-canvas-soft)",
           tint: "var(--color-canvas-tint)",
         },
+        "graph-void": "var(--color-graph-void)",
         ink: {
           DEFAULT: "var(--color-ink)",
           heading: "var(--color-heading)",

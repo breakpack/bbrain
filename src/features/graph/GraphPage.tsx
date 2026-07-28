@@ -29,22 +29,47 @@ const reducedMotionQuery = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
+ * Obsidian-style palette for the dark graph void: gray glowing dots, hair-thin
+ * edges, green (the app's only accent) reserved for the active concept. These
+ * feed cytoscape's canvas renderer, so they live here rather than in CSS.
+ */
+const GRAPH = {
+  node: "#8f8f8f",
+  nodeBright: "#e2e2e2",
+  label: "#7d7d7d",
+  labelBright: "#d6d6d6",
+  edge: "#333333",
+  edgeBright: "#5a5a5a",
+  accent: "#00c473",
+};
+
+/** Labels clutter the void when zoomed out; below this zoom they vanish. */
+const LABEL_ZOOM = 0.65;
+
+/**
  * Focus a selection: fade everything, then restore the selected node, its direct
  * neighbours, and the edges between them. Green marks the selection, the rest
- * recedes (DESIGN.md §12.2). Guarded so the jsdom cytoscape stub — whose event
- * targets only expose `id()` — is a no-op instead of a crash.
+ * recedes into the void (DESIGN.md §12.2). Guarded so the jsdom cytoscape stub —
+ * whose event targets only expose `id()` — is a no-op instead of a crash.
  */
-function focusNeighborhood(cy: Core, node: { closedNeighborhood?: () => { removeClass: (c: string) => void } }) {
+function focusNeighborhood(
+  cy: Core,
+  node: {
+    closedNeighborhood?: () => { removeClass: (c: string) => void; addClass: (c: string) => void };
+  },
+) {
   if (typeof cy.elements !== "function" || typeof node.closedNeighborhood !== "function") return;
-  cy.elements().addClass("faded");
+  cy.elements().addClass("faded").removeClass("lit");
   // closedNeighborhood = the node itself plus its adjacent nodes and the edges
   // connecting them.
-  node.closedNeighborhood().removeClass("faded");
+  const neighborhood = node.closedNeighborhood();
+  neighborhood.removeClass("faded");
+  neighborhood.addClass("lit");
 }
 
 function clearFocus(cy: Core) {
   if (typeof cy.elements !== "function") return;
-  cy.elements().removeClass("faded");
+  cy.elements().removeClass("faded").removeClass("lit");
 }
 
 // --- topic graph -------------------------------------------------------------
@@ -120,45 +145,83 @@ function TopicGraphView({
         {
           selector: "node",
           style: {
-            "background-color": "#c2c2c2",
+            "background-color": GRAPH.node,
+            // The soft halo around each dot — Obsidian's glow, done with
+            // cytoscape's underlay ring.
+            "underlay-color": GRAPH.node,
+            "underlay-opacity": 0.14,
+            "underlay-padding": 6,
+            "underlay-shape": "ellipse",
+            "border-width": 0,
             label: "data(label)",
-            "font-size": "11px",
-            color: "#333333",
+            "font-size": "10px",
+            color: GRAPH.label,
             "text-wrap": "ellipsis",
-            "text-max-width": "120px",
+            "text-max-width": "130px",
             "text-valign": "bottom",
-            "text-margin-y": 4,
+            "text-margin-y": 6,
             width: "data(size)",
             height: "data(size)",
+            "transition-property": "background-color, underlay-opacity, opacity",
+            "transition-duration": 120,
           },
         },
         {
-          selector: "node:selected",
-          style: { "background-color": "#00c473", color: "#000000" },
-        },
-        {
           selector: "edge",
-          style: { "curve-style": "haystack", "line-color": "#c2c2c2", opacity: 0.5 },
+          style: {
+            "curve-style": "haystack",
+            "line-color": GRAPH.edge,
+            width: 1,
+            opacity: 0.9,
+            "transition-property": "line-color, opacity",
+            "transition-duration": 120,
+          },
         },
         {
           selector: 'edge[type="cooccurrence"]',
-          style: { "line-color": "#8a8a8a", width: "data(width)", opacity: 0.7 },
+          style: { width: "data(width)" },
         },
         {
           selector: 'edge[type="semantic"]',
-          style: { "line-color": "#c2c2c2", "line-style": "dashed", opacity: 0.45 },
+          style: { "line-style": "dashed", opacity: 0.55 },
         },
-        { selector: "edge:selected", style: { "line-color": "#00c473", opacity: 1 } },
-        // Everything outside the current selection recedes (DESIGN.md §12.2).
-        { selector: "node.faded", style: { opacity: 0.15 } },
-        { selector: "edge.faded", style: { opacity: 0.08 } },
+        // Hover/selection: the neighbourhood lights up, the accent marks the
+        // concept itself, and everything else recedes into the void.
+        {
+          selector: "node.lit",
+          style: {
+            "background-color": GRAPH.nodeBright,
+            "underlay-color": GRAPH.nodeBright,
+            "underlay-opacity": 0.18,
+            color: GRAPH.labelBright,
+          },
+        },
+        { selector: "edge.lit", style: { "line-color": GRAPH.edgeBright, opacity: 1 } },
+        {
+          selector: "node:selected, node.hovered",
+          style: {
+            "background-color": GRAPH.accent,
+            "underlay-color": GRAPH.accent,
+            "underlay-opacity": 0.28,
+            "underlay-padding": 9,
+            color: GRAPH.accent,
+          },
+        },
+        { selector: "edge:selected", style: { "line-color": GRAPH.accent, opacity: 1 } },
+        { selector: "node.faded", style: { opacity: 0.12, "text-opacity": 0 } },
+        { selector: "edge.faded", style: { opacity: 0.05 } },
+        // Zoomed far out, labels are noise — only the constellation remains.
+        { selector: "node.nolabel", style: { "text-opacity": 0 } },
       ],
       layout: {
         name: "cose",
         animate: !reducedMotion,
-        animationDuration: 320,
-        nodeRepulsion: () => 9000,
-        idealEdgeLength: () => 90,
+        animationDuration: 900,
+        animationEasing: "ease-out",
+        nodeRepulsion: () => 14000,
+        idealEdgeLength: () => 80,
+        gravity: 40,
+        padding: 60,
       },
       wheelSensitivity: 0.2,
     });
@@ -172,6 +235,31 @@ function TopicGraphView({
       setSelected(null);
       clearFocus(cy);
     });
+
+    // Obsidian-style hover: the pointed-at concept and its neighbours glow,
+    // the rest fades. On leave, fall back to the selection's focus (if any).
+    cy.on("mouseover", "node", (event) => {
+      if (typeof event.target.addClass === "function") event.target.addClass("hovered");
+      focusNeighborhood(cy, event.target);
+    });
+    cy.on("mouseout", "node", (event) => {
+      if (typeof event.target.removeClass === "function") event.target.removeClass("hovered");
+      if (typeof cy.$ !== "function") return;
+      const selectedNode = cy.$("node:selected");
+      if (selectedNode.length > 0) {
+        focusNeighborhood(cy, selectedNode as unknown as Parameters<typeof focusNeighborhood>[1]);
+      } else {
+        clearFocus(cy);
+      }
+    });
+
+    // Fade labels out when the whole constellation is in view.
+    const syncLabels = () => {
+      if (typeof cy.zoom !== "function" || typeof cy.nodes !== "function") return;
+      cy.nodes().toggleClass("nolabel", cy.zoom() < LABEL_ZOOM);
+    };
+    cy.on("zoom", syncLabels);
+    syncLabels();
 
     cyRef.current = cy;
     return () => {
@@ -397,39 +485,44 @@ function GraphLayout({
     <div className="flex min-h-0 flex-1">
       <div className="relative min-w-0 flex-1">
         {/* The canvas always mounts so its ref is available; the state overlays
-            sit on top of it. */}
-        <div ref={containerRef} className="h-full w-full bg-canvas-soft" />
+            sit on top of it. The void is the app's one dark surface, so overlay
+            text rides on a light panel instead of the ink colors directly. */}
+        <div ref={containerRef} className="h-full w-full bg-graph-void" />
 
         {error ? (
           <div
             role="alert"
-            className="absolute inset-0 flex flex-col items-center justify-center gap-md p-section text-center"
+            className="absolute inset-0 flex flex-col items-center justify-center p-section text-center"
           >
-            <Eyebrow>관계 그래프</Eyebrow>
-            <CardTitle>그래프를 불러오지 못했습니다</CardTitle>
-            <CardDescription>{error.description}</CardDescription>
-            <Button size="sm" onClick={error.onRetry} loading={error.retrying}>
-              다시 시도
-            </Button>
+            <div className="flex max-w-md flex-col items-center gap-md rounded-md border border-line bg-canvas p-lg shadow-card">
+              <Eyebrow>관계 그래프</Eyebrow>
+              <CardTitle>그래프를 불러오지 못했습니다</CardTitle>
+              <CardDescription>{error.description}</CardDescription>
+              <Button size="sm" onClick={error.onRetry} loading={error.retrying}>
+                다시 시도
+              </Button>
+            </div>
           </div>
         ) : empty ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-md p-section text-center">
-            <Eyebrow>관계 그래프</Eyebrow>
-            <CardTitle>{empty.title}</CardTitle>
-            <CardDescription>{empty.description}</CardDescription>
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-section text-center">
+            <div className="flex max-w-md flex-col items-center gap-md rounded-md border border-line bg-canvas p-lg shadow-card">
+              <Eyebrow>관계 그래프</Eyebrow>
+              <CardTitle>{empty.title}</CardTitle>
+              <CardDescription>{empty.description}</CardDescription>
+            </div>
           </div>
         ) : loading ? (
           <div
             aria-live="polite"
             className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-sm p-section text-center"
           >
-            <p className="animate-pulse text-body text-ink-body motion-reduce:animate-none">
+            <p className="animate-pulse text-body text-ink-subhead motion-reduce:animate-none">
               그래프를 준비하는 중이에요
             </p>
           </div>
         ) : null}
 
-        <div className="absolute left-md top-md flex items-center gap-sm">
+        <div className="absolute left-md top-md flex items-center gap-sm rounded-md border border-line bg-canvas p-1 shadow-card">
           {toggle}
           <Button variant="outline" size="sm" onClick={onFit} disabled={loading || !!error}>
             <Maximize2 aria-hidden className="h-4 w-4" />
