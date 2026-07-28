@@ -103,6 +103,12 @@ describe("graph page — topic view (default)", () => {
     screen.getByRole("slider", { name: "\uc911\uc2ec \ud798" });
     screen.getByRole("slider", { name: "\ub9c1\ud06c \ud798" });
     screen.getByRole("slider", { name: "\ub9c1\ud06c \uac70\ub9ac" });
+    screen.getByRole("slider", { name: "\ub178\ub4dc \ud06c\uae30" });
+
+    // The on-canvas zoom bar: slider plus \u00b1 buttons alongside wheel zoom.
+    screen.getByRole("slider", { name: "\ud655\ub300/\ucd95\uc18c" });
+    screen.getByRole("button", { name: "\ud655\ub300" });
+    screen.getByRole("button", { name: "\ucd95\uc18c" });
 
     // Moving one changes the stored settings, so the feel survives a restart.
     fireEvent.change(repel, { target: { value: "1.6" } });

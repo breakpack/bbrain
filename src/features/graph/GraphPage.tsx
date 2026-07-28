@@ -10,7 +10,7 @@ import {
   type Simulation,
   type SimulationNodeDatum,
 } from "d3-force";
-import { FileDown, Maximize2, RefreshCw } from "lucide-react";
+import { FileDown, Maximize2, RefreshCw, ZoomIn, ZoomOut } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/Badge";
@@ -58,7 +58,7 @@ const LABEL_ZOOM = 0.65;
 
 // --- live physics (Obsidian-style force controls) ----------------------------
 
-/** The tunable forces, in the same terms Obsidian exposes them. */
+/** The tunable forces and view settings, in the same terms Obsidian exposes them. */
 type ForceSettings = {
   /** 노드끼리 밀어내는 힘 (0–2). */
   repel: number;
@@ -68,6 +68,8 @@ type ForceSettings = {
   linkStrength: number;
   /** 연결된 노드가 유지하려는 거리 (px). */
   linkDistance: number;
+  /** 노드 크기 배율 (0.5–2). */
+  nodeScale: number;
 };
 
 const DEFAULT_FORCES: ForceSettings = {
@@ -75,7 +77,17 @@ const DEFAULT_FORCES: ForceSettings = {
   centerForce: 0.5,
   linkStrength: 0.6,
   linkDistance: 90,
+  nodeScale: 1,
 };
+
+/** Shared zoom bounds for the wheel and the on-canvas zoom bar. */
+const ZOOM_MIN = 0.15;
+const ZOOM_MAX = 3;
+
+/** Zoom is perceptual, so the bar runs on a log scale: t∈[0,1] ↔ zoom level. */
+const zoomToSlider = (zoom: number) =>
+  Math.log(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom)) / ZOOM_MIN) / Math.log(ZOOM_MAX / ZOOM_MIN);
+const sliderToZoom = (t: number) => ZOOM_MIN * Math.pow(ZOOM_MAX / ZOOM_MIN, t);
 
 const FORCES_KEY = "bbrain.graph.forces";
 
@@ -101,6 +113,14 @@ function applyForces(sim: Simulation<SimNode, undefined>, forces: ForceSettings)
     .strength(0.05 + 0.95 * forces.linkStrength);
   (sim.force("x") as ReturnType<typeof forceX<SimNode>>).strength(0.01 + 0.19 * forces.centerForce);
   (sim.force("y") as ReturnType<typeof forceY<SimNode>>).strength(0.01 + 0.19 * forces.centerForce);
+}
+
+/** Rescales every node's rendered size; `data(size)` in the style picks it up. */
+function applyNodeScale(cy: Core, scale: number) {
+  if (typeof cy.nodes !== "function") return;
+  cy.nodes().forEach((node) => {
+    node.data("size", ((node.data("base") as number | undefined) ?? 20) * scale);
+  });
 }
 
 /**
@@ -159,7 +179,22 @@ function TopicGraphView({
   const [edgeFilter, setEdgeFilter] = useState<TopicEdgeType[]>(["cooccurrence", "semantic"]);
   const [forces, setForces] = useState<ForceSettings>(loadForces);
   const forcesRef = useRef(forces);
+  const [zoom, setZoom] = useState(1);
   const reducedMotion = useMemo(reducedMotionQuery, []);
+
+  /** Zooms about the viewport centre — what both the bar and ± buttons use. */
+  const applyZoom = (level: number) => {
+    const cy = cyRef.current;
+    const container = containerRef.current;
+    if (!cy || typeof cy.zoom !== "function") return;
+    cy.zoom({
+      level: Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, level)),
+      renderedPosition: {
+        x: (container?.clientWidth ?? 0) / 2,
+        y: (container?.clientHeight ?? 0) / 2,
+      },
+    });
+  };
 
   const elements = useMemo(() => {
     if (!graph.data) return [];
@@ -169,14 +204,12 @@ function TopicGraphView({
       ...graph.data.edges.filter((e) => e.edgeType === "cooccurrence").map((e) => e.weight),
     );
 
-    const nodes = graph.data.nodes.map((node) => ({
-      data: {
-        id: node.id,
-        label: node.label,
-        // Size scales with how many papers discuss the concept.
-        size: 16 + 30 * (node.paperCount / maxCount),
-      },
-    }));
+    const nodes = graph.data.nodes.map((node) => {
+      // Base size scales with how many papers discuss the concept; the 노드
+      // 크기 slider multiplies it after mount (data(size) in the style).
+      const base = 16 + 30 * (node.paperCount / maxCount);
+      return { data: { id: node.id, label: node.label, base, size: base } };
+    });
     const ids = new Set(nodes.map((node) => node.data.id));
 
     const edges = graph.data.edges
@@ -279,7 +312,12 @@ function TopicGraphView({
       // and the force sliders act in real time.
       layout: { name: "preset" },
       wheelSensitivity: 0.2,
+      // Wheel and zoom bar share the same bounds.
+      minZoom: ZOOM_MIN,
+      maxZoom: ZOOM_MAX,
     });
+
+    applyNodeScale(cy, forcesRef.current.nodeScale);
 
     cy.on("select", "node", (event) => {
       const id = event.target.id();
@@ -308,13 +346,16 @@ function TopicGraphView({
       }
     });
 
-    // Fade labels out when the whole constellation is in view.
-    const syncLabels = () => {
+    // Fade labels out when the whole constellation is in view, and keep the
+    // zoom bar in step with wheel/pinch zooming.
+    const syncZoom = () => {
       if (typeof cy.zoom !== "function" || typeof cy.nodes !== "function") return;
-      cy.nodes().toggleClass("nolabel", cy.zoom() < LABEL_ZOOM);
+      const level = cy.zoom();
+      cy.nodes().toggleClass("nolabel", level < LABEL_ZOOM);
+      setZoom(level);
     };
-    cy.on("zoom", syncLabels);
-    syncLabels();
+    cy.on("zoom", syncZoom);
+    syncZoom();
 
     // --- live force simulation (guarded so the jsdom stub skips it) ----------
     let sim: Simulation<SimNode, undefined> | null = null;
@@ -345,7 +386,14 @@ function TopicGraphView({
         )
         .force("x", forceX<SimNode>(width / 2))
         .force("y", forceY<SimNode>(height / 2))
-        .force("collide", forceCollide<SimNode>().radius((node) => node.size / 2 + 5))
+        .force(
+          "collide",
+          // Reads the live multiplier so the 노드 크기 slider also widens the
+          // personal space nodes keep from each other.
+          forceCollide<SimNode>().radius(
+            (node) => (node.size * forcesRef.current.nodeScale) / 2 + 5,
+          ),
+        )
         .stop();
       applyForces(sim, forcesRef.current);
 
@@ -418,6 +466,7 @@ function TopicGraphView({
     } catch {
       // Persistence is a convenience; the sliders still work without it.
     }
+    if (cyRef.current) applyNodeScale(cyRef.current, forces.nodeScale);
     const sim = simRef.current;
     if (!sim) return;
     applyForces(sim, forces);
@@ -436,6 +485,34 @@ function TopicGraphView({
       toggle={toggle}
       containerRef={containerRef}
       onFit={() => cyRef.current?.fit(undefined, 40)}
+      zoomBar={
+        <div className="absolute bottom-md right-md flex items-center gap-sm rounded-md border border-line bg-canvas px-sm py-1.5 shadow-card">
+          <button
+            onClick={() => applyZoom(zoom / 1.25)}
+            aria-label="축소"
+            className="text-ink-body transition-colors duration-fast hover:text-primary"
+          >
+            <ZoomOut aria-hidden className="h-4 w-4" />
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={zoomToSlider(zoom)}
+            onChange={(event) => applyZoom(sliderToZoom(Number(event.target.value)))}
+            aria-label="확대/축소"
+            className="h-1.5 w-32 cursor-pointer accent-primary"
+          />
+          <button
+            onClick={() => applyZoom(zoom * 1.25)}
+            aria-label="확대"
+            className="text-ink-body transition-colors duration-fast hover:text-primary"
+          >
+            <ZoomIn aria-hidden className="h-4 w-4" />
+          </button>
+        </div>
+      }
       extraToolbar={
         <>
           <Button
@@ -559,6 +636,14 @@ function TopicGraphView({
               value={forces.linkDistance}
               onChange={(linkDistance) => setForces((current) => ({ ...current, linkDistance }))}
             />
+            <ForceSlider
+              label="노드 크기"
+              min={0.5}
+              max={2}
+              step={0.05}
+              value={forces.nodeScale}
+              onChange={(nodeScale) => setForces((current) => ({ ...current, nodeScale }))}
+            />
           </section>
 
           {selected && (
@@ -672,6 +757,7 @@ function GraphLayout({
   onFit,
   sidebar,
   extraToolbar,
+  zoomBar,
   empty,
   error,
   loading,
@@ -681,6 +767,7 @@ function GraphLayout({
   onFit: () => void;
   sidebar: React.ReactNode;
   extraToolbar?: React.ReactNode;
+  zoomBar?: React.ReactNode;
   empty?: { title: string; description: string };
   error?: { description: string; onRetry: () => void; retrying?: boolean };
   loading?: boolean;
@@ -730,6 +817,8 @@ function GraphLayout({
           </Button>
           {extraToolbar}
         </div>
+
+        {!loading && !error && !empty && zoomBar}
       </div>
 
       <aside
