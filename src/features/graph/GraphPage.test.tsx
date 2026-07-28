@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -89,6 +89,26 @@ describe("graph page — topic view (default)", () => {
     renderWithQuery(<GraphPage onOpenPaper={noop} />);
 
     expect(await screen.findByText("아직 토픽이 없습니다")).toBeInTheDocument();
+  });
+
+  it("exposes adjustable force sliders and persists their values", async () => {
+    localStorage.removeItem("bbrain.graph.forces");
+    mockCommands({ get_topic_graph: () => TOPIC_GRAPH, get_tag_note: () => null });
+
+    renderWithQuery(<GraphPage onOpenPaper={noop} />);
+    await waitFor(() => expect(cyHarness.instances).toBeGreaterThan(0));
+
+    // The four Obsidian-style physics controls are present.
+    const repel = await screen.findByRole("slider", { name: "\ubc00\uc5b4\ub0b4\ub294 \ud798" });
+    screen.getByRole("slider", { name: "\uc911\uc2ec \ud798" });
+    screen.getByRole("slider", { name: "\ub9c1\ud06c \ud798" });
+    screen.getByRole("slider", { name: "\ub9c1\ud06c \uac70\ub9ac" });
+
+    // Moving one changes the stored settings, so the feel survives a restart.
+    fireEvent.change(repel, { target: { value: "1.6" } });
+    await waitFor(() => {
+      expect(JSON.parse(localStorage.getItem("bbrain.graph.forces") ?? "{}").repel).toBe(1.6);
+    });
   });
 
   it("shows a selected topic's papers and opens one on click", async () => {

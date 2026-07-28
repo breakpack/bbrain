@@ -1,5 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import cytoscape, { type Core } from "cytoscape";
+import {
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  forceX,
+  forceY,
+  type Simulation,
+  type SimulationNodeDatum,
+} from "d3-force";
 import { FileDown, Maximize2, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -29,22 +39,69 @@ const reducedMotionQuery = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
- * Obsidian-style palette for the dark graph void: gray glowing dots, hair-thin
- * edges, green (the app's only accent) reserved for the active concept. These
- * feed cytoscape's canvas renderer, so they live here rather than in CSS.
+ * DESIGN.md palette for the graph: grayscale dots and hairline edges on the
+ * light canvas, green (the app's only accent) reserved for the active concept.
+ * These feed cytoscape's canvas renderer, so they live here rather than CSS.
  */
 const GRAPH = {
-  node: "#8f8f8f",
-  nodeBright: "#e2e2e2",
-  label: "#7d7d7d",
-  labelBright: "#d6d6d6",
-  edge: "#333333",
-  edgeBright: "#5a5a5a",
+  node: "#c2c2c2",
+  nodeLit: "#8a8a8a",
+  label: "#a2a2a2",
+  labelLit: "#333333",
+  edge: "#e0e0e4",
+  edgeLit: "#b4b4ba",
   accent: "#00c473",
 };
 
-/** Labels clutter the void when zoomed out; below this zoom they vanish. */
+/** Labels clutter the view when zoomed out; below this zoom they vanish. */
 const LABEL_ZOOM = 0.65;
+
+// --- live physics (Obsidian-style force controls) ----------------------------
+
+/** The tunable forces, in the same terms Obsidian exposes them. */
+type ForceSettings = {
+  /** 노드끼리 밀어내는 힘 (0–2). */
+  repel: number;
+  /** 흩어진 그래프를 화면 중심으로 끌어당기는 힘 (0–1). */
+  centerForce: number;
+  /** 연결선이 양끝을 당기는 힘 (0–1). */
+  linkStrength: number;
+  /** 연결된 노드가 유지하려는 거리 (px). */
+  linkDistance: number;
+};
+
+const DEFAULT_FORCES: ForceSettings = {
+  repel: 1,
+  centerForce: 0.5,
+  linkStrength: 0.6,
+  linkDistance: 90,
+};
+
+const FORCES_KEY = "bbrain.graph.forces";
+
+function loadForces(): ForceSettings {
+  try {
+    const raw = localStorage.getItem(FORCES_KEY);
+    if (!raw) return DEFAULT_FORCES;
+    return { ...DEFAULT_FORCES, ...(JSON.parse(raw) as Partial<ForceSettings>) };
+  } catch {
+    return DEFAULT_FORCES;
+  }
+}
+
+type SimNode = SimulationNodeDatum & { id: string; size: number };
+
+/** Maps the 0–1/0–2 slider values onto d3-force parameter ranges. */
+function applyForces(sim: Simulation<SimNode, undefined>, forces: ForceSettings) {
+  (sim.force("charge") as ReturnType<typeof forceManyBody<SimNode>>).strength(
+    -40 - 220 * forces.repel,
+  );
+  (sim.force("link") as ReturnType<typeof forceLink<SimNode, { source: string; target: string }>>)
+    .distance(forces.linkDistance)
+    .strength(0.05 + 0.95 * forces.linkStrength);
+  (sim.force("x") as ReturnType<typeof forceX<SimNode>>).strength(0.01 + 0.19 * forces.centerForce);
+  (sim.force("y") as ReturnType<typeof forceY<SimNode>>).strength(0.01 + 0.19 * forces.centerForce);
+}
 
 /**
  * Focus a selection: fade everything, then restore the selected node, its direct
@@ -96,8 +153,12 @@ function TopicGraphView({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
+  const simRef = useRef<Simulation<SimNode, undefined> | null>(null);
+  const renderRef = useRef<(() => void) | null>(null);
   const [selected, setSelected] = useState<TopicNode | null>(null);
   const [edgeFilter, setEdgeFilter] = useState<TopicEdgeType[]>(["cooccurrence", "semantic"]);
+  const [forces, setForces] = useState<ForceSettings>(loadForces);
+  const forcesRef = useRef(forces);
   const reducedMotion = useMemo(reducedMotionQuery, []);
 
   const elements = useMemo(() => {
@@ -185,18 +246,18 @@ function TopicGraphView({
           selector: 'edge[type="semantic"]',
           style: { "line-style": "dashed", opacity: 0.55 },
         },
-        // Hover/selection: the neighbourhood lights up, the accent marks the
-        // concept itself, and everything else recedes into the void.
+        // Hover/selection: the neighbourhood darkens into focus, the accent
+        // marks the concept itself, and everything else recedes.
         {
           selector: "node.lit",
           style: {
-            "background-color": GRAPH.nodeBright,
-            "underlay-color": GRAPH.nodeBright,
-            "underlay-opacity": 0.18,
-            color: GRAPH.labelBright,
+            "background-color": GRAPH.nodeLit,
+            "underlay-color": GRAPH.nodeLit,
+            "underlay-opacity": 0.14,
+            color: GRAPH.labelLit,
           },
         },
-        { selector: "edge.lit", style: { "line-color": GRAPH.edgeBright, opacity: 1 } },
+        { selector: "edge.lit", style: { "line-color": GRAPH.edgeLit, opacity: 1 } },
         {
           selector: "node:selected, node.hovered",
           style: {
@@ -208,21 +269,15 @@ function TopicGraphView({
           },
         },
         { selector: "edge:selected", style: { "line-color": GRAPH.accent, opacity: 1 } },
-        { selector: "node.faded", style: { opacity: 0.12, "text-opacity": 0 } },
-        { selector: "edge.faded", style: { opacity: 0.05 } },
+        { selector: "node.faded", style: { opacity: 0.15, "text-opacity": 0 } },
+        { selector: "edge.faded", style: { opacity: 0.06 } },
         // Zoomed far out, labels are noise — only the constellation remains.
         { selector: "node.nolabel", style: { "text-opacity": 0 } },
       ],
-      layout: {
-        name: "cose",
-        animate: !reducedMotion,
-        animationDuration: 900,
-        animationEasing: "ease-out",
-        nodeRepulsion: () => 14000,
-        idealEdgeLength: () => 80,
-        gravity: 40,
-        padding: 60,
-      },
+      // Positions come from the live d3-force simulation below, not a one-shot
+      // layout — that is what makes dragging a node push its neighbours around
+      // and the force sliders act in real time.
+      layout: { name: "preset" },
       wheelSensitivity: 0.2,
     });
 
@@ -261,12 +316,118 @@ function TopicGraphView({
     cy.on("zoom", syncLabels);
     syncLabels();
 
+    // --- live force simulation (guarded so the jsdom stub skips it) ----------
+    let sim: Simulation<SimNode, undefined> | null = null;
+    if (typeof cy.getElementById === "function" && typeof cy.batch === "function") {
+      const width = container.clientWidth || 800;
+      const height = container.clientHeight || 600;
+
+      type ElementDef = { data: { id: string; size?: number; source?: string; target?: string } };
+      const nodeEls = (elements as ElementDef[]).filter((el) => el.data.source === undefined);
+      const edgeEls = (elements as ElementDef[]).filter((el) => el.data.source !== undefined);
+
+      // Deterministic spiral seed: stable layouts across opens, no jump cuts.
+      const simNodes: SimNode[] = nodeEls.map((el, i) => ({
+        id: el.data.id,
+        size: el.data.size ?? 20,
+        x: width / 2 + 30 * Math.sqrt(i + 1) * Math.cos(i * 2.4),
+        y: height / 2 + 30 * Math.sqrt(i + 1) * Math.sin(i * 2.4),
+      }));
+      const byId = new Map(simNodes.map((node) => [node.id, node]));
+
+      sim = forceSimulation(simNodes)
+        .force("charge", forceManyBody<SimNode>())
+        .force(
+          "link",
+          forceLink<SimNode, { source: string; target: string }>(
+            edgeEls.map((el) => ({ source: el.data.source!, target: el.data.target! })),
+          ).id((node) => node.id),
+        )
+        .force("x", forceX<SimNode>(width / 2))
+        .force("y", forceY<SimNode>(height / 2))
+        .force("collide", forceCollide<SimNode>().radius((node) => node.size / 2 + 5))
+        .stop();
+      applyForces(sim, forcesRef.current);
+
+      const render = () => {
+        cy.batch(() => {
+          for (const node of simNodes) {
+            cy.getElementById(node.id).position({ x: node.x ?? 0, y: node.y ?? 0 });
+          }
+        });
+      };
+      renderRef.current = render;
+
+      // Pre-settle a moment so the first visible frame is a constellation, not
+      // a random scatter; then either animate the rest or finish instantly.
+      sim.tick(40);
+      render();
+      cy.fit(undefined, 60);
+
+      if (reducedMotion) {
+        sim.tick(260);
+        render();
+        cy.fit(undefined, 60);
+      } else {
+        sim.on("tick", render);
+        sim.restart();
+
+        // Dragging a node pins it under the cursor while the simulation keeps
+        // running, so its neighbours are pushed and pulled live.
+        cy.on("grab", "node", (event) => {
+          const node = byId.get(event.target.id());
+          if (!node || !sim) return;
+          sim.alphaTarget(0.3).restart();
+          const position = event.target.position();
+          node.fx = position.x;
+          node.fy = position.y;
+        });
+        cy.on("drag", "node", (event) => {
+          const node = byId.get(event.target.id());
+          if (!node) return;
+          const position = event.target.position();
+          node.fx = position.x;
+          node.fy = position.y;
+        });
+        cy.on("free", "node", (event) => {
+          const node = byId.get(event.target.id());
+          if (!node || !sim) return;
+          node.fx = null;
+          node.fy = null;
+          sim.alphaTarget(0);
+        });
+      }
+      simRef.current = sim;
+    }
+
     cyRef.current = cy;
     return () => {
+      sim?.stop();
+      simRef.current = null;
+      renderRef.current = null;
       cy.destroy();
       cyRef.current = null;
     };
   }, [elements, graph.data, reducedMotion]);
+
+  // Slider changes reshape the live simulation immediately and persist.
+  useEffect(() => {
+    forcesRef.current = forces;
+    try {
+      localStorage.setItem(FORCES_KEY, JSON.stringify(forces));
+    } catch {
+      // Persistence is a convenience; the sliders still work without it.
+    }
+    const sim = simRef.current;
+    if (!sim) return;
+    applyForces(sim, forces);
+    if (reducedMotion) {
+      sim.tick(200);
+      renderRef.current?.();
+    } else {
+      sim.alpha(0.5).restart();
+    }
+  }, [forces, reducedMotion]);
 
   const empty = graph.isSuccess && graph.data.nodes.length === 0;
 
@@ -354,6 +515,50 @@ function TopicGraphView({
             <p className="text-caption text-ink-subhead">
               원의 크기는 그 개념을 다룬 논문 수예요. 개념을 누르면 이어진 개념만 밝게 남습니다.
             </p>
+          </section>
+
+          <section className="flex flex-col gap-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-caption font-medium text-ink-body">그래프 물리</h2>
+              <button
+                onClick={() => setForces(DEFAULT_FORCES)}
+                className="text-caption text-ink-subhead transition-colors duration-fast hover:text-primary"
+              >
+                초기화
+              </button>
+            </div>
+            <ForceSlider
+              label="밀어내는 힘"
+              min={0}
+              max={2}
+              step={0.05}
+              value={forces.repel}
+              onChange={(repel) => setForces((current) => ({ ...current, repel }))}
+            />
+            <ForceSlider
+              label="중심 힘"
+              min={0}
+              max={1}
+              step={0.05}
+              value={forces.centerForce}
+              onChange={(centerForce) => setForces((current) => ({ ...current, centerForce }))}
+            />
+            <ForceSlider
+              label="링크 힘"
+              min={0}
+              max={1}
+              step={0.05}
+              value={forces.linkStrength}
+              onChange={(linkStrength) => setForces((current) => ({ ...current, linkStrength }))}
+            />
+            <ForceSlider
+              label="링크 거리"
+              min={30}
+              max={200}
+              step={5}
+              value={forces.linkDistance}
+              onChange={(linkDistance) => setForces((current) => ({ ...current, linkDistance }))}
+            />
           </section>
 
           {selected && (
@@ -485,44 +690,39 @@ function GraphLayout({
     <div className="flex min-h-0 flex-1">
       <div className="relative min-w-0 flex-1">
         {/* The canvas always mounts so its ref is available; the state overlays
-            sit on top of it. The void is the app's one dark surface, so overlay
-            text rides on a light panel instead of the ink colors directly. */}
-        <div ref={containerRef} className="h-full w-full bg-graph-void" />
+            sit on top of it. */}
+        <div ref={containerRef} className="h-full w-full bg-canvas-soft" />
 
         {error ? (
           <div
             role="alert"
-            className="absolute inset-0 flex flex-col items-center justify-center p-section text-center"
+            className="absolute inset-0 flex flex-col items-center justify-center gap-md p-section text-center"
           >
-            <div className="flex max-w-md flex-col items-center gap-md rounded-md border border-line bg-canvas p-lg shadow-card">
-              <Eyebrow>관계 그래프</Eyebrow>
-              <CardTitle>그래프를 불러오지 못했습니다</CardTitle>
-              <CardDescription>{error.description}</CardDescription>
-              <Button size="sm" onClick={error.onRetry} loading={error.retrying}>
-                다시 시도
-              </Button>
-            </div>
+            <Eyebrow>관계 그래프</Eyebrow>
+            <CardTitle>그래프를 불러오지 못했습니다</CardTitle>
+            <CardDescription>{error.description}</CardDescription>
+            <Button size="sm" onClick={error.onRetry} loading={error.retrying}>
+              다시 시도
+            </Button>
           </div>
         ) : empty ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center p-section text-center">
-            <div className="flex max-w-md flex-col items-center gap-md rounded-md border border-line bg-canvas p-lg shadow-card">
-              <Eyebrow>관계 그래프</Eyebrow>
-              <CardTitle>{empty.title}</CardTitle>
-              <CardDescription>{empty.description}</CardDescription>
-            </div>
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-md p-section text-center">
+            <Eyebrow>관계 그래프</Eyebrow>
+            <CardTitle>{empty.title}</CardTitle>
+            <CardDescription>{empty.description}</CardDescription>
           </div>
         ) : loading ? (
           <div
             aria-live="polite"
             className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-sm p-section text-center"
           >
-            <p className="animate-pulse text-body text-ink-subhead motion-reduce:animate-none">
+            <p className="animate-pulse text-body text-ink-body motion-reduce:animate-none">
               그래프를 준비하는 중이에요
             </p>
           </div>
         ) : null}
 
-        <div className="absolute left-md top-md flex items-center gap-sm rounded-md border border-line bg-canvas p-1 shadow-card">
+        <div className="absolute left-md top-md flex items-center gap-sm">
           {toggle}
           <Button variant="outline" size="sm" onClick={onFit} disabled={loading || !!error}>
             <Maximize2 aria-hidden className="h-4 w-4" />
@@ -539,6 +739,44 @@ function GraphLayout({
         {sidebar}
       </aside>
     </div>
+  );
+}
+
+/** One Obsidian-style force control: a labelled range slider with live value. */
+function ForceSlider({
+  label,
+  min,
+  max,
+  step,
+  value,
+  onChange,
+}: {
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="flex items-center justify-between text-caption text-ink-body">
+        {label}
+        <span className="tabular-nums text-ink-subhead">
+          {step >= 1 ? Math.round(value) : value.toFixed(2)}
+        </span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="h-1.5 w-full cursor-pointer accent-primary"
+        aria-label={label}
+      />
+    </label>
   );
 }
 
