@@ -1,10 +1,10 @@
-import { BookOpen, Compass, ExternalLink, Quote, Search } from "lucide-react";
+import { BookOpen, ExternalLink, Quote, Search } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle, Eyebrow } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
-import { errorMessage } from "@/lib/ipc";
+import { errorMessage, isCommandError } from "@/lib/ipc";
 import type { DiscoveredPaper, ImportOutcome } from "@/lib/types";
 import { useImportDiscoveredPaper, useSearchPapers } from "./queries";
 
@@ -16,32 +16,14 @@ const PAGE_SIZE = 20;
  * The network and the source live in the Rust core (api.searchPapers /
  * api.importDiscoveredPaper); this page only drives the search and renders it.
  */
-/** Set to false to re-enable the search UI below. The Semantic Scholar shared
- * pool rate-limits too aggressively for a reliable v0.1 experience, so the
- * page ships as "준비 중" until an API-key path (or backoff) lands. */
-const COMING_SOON = true;
-
 export function DiscoverPage({ onOpenPaper }: { onOpenPaper: (paperId: string) => void }) {
-  if (COMING_SOON) return <ComingSoon />;
   return <DiscoverSearch onOpenPaper={onOpenPaper} />;
-}
-
-function ComingSoon() {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-md p-xl text-center">
-      <Compass aria-hidden className="h-10 w-10 text-ink-body" />
-      <h1 className="text-subheading text-ink-heading">준비 중인 기능입니다</h1>
-      <p className="max-w-[420px] text-caption text-ink-body">
-        주제로 논문을 찾아 바로 가져오는 기능을 다듬고 있습니다. 지금은 PDF를
-        라이브러리로 직접 가져와 주세요.
-      </p>
-    </div>
-  );
 }
 
 function DiscoverSearch({ onOpenPaper }: { onOpenPaper: (paperId: string) => void }) {
   const [input, setInput] = useState("");
   const [submitted, setSubmitted] = useState("");
+  const [submittedOpenAccessOnly, setSubmittedOpenAccessOnly] = useState(false);
   const [openAccessOnly, setOpenAccessOnly] = useState(false);
   const [hits, setHits] = useState<DiscoveredPaper[]>([]);
   const [total, setTotal] = useState(0);
@@ -50,20 +32,24 @@ function DiscoverSearch({ onOpenPaper }: { onOpenPaper: (paperId: string) => voi
 
   const search = useSearchPapers();
 
-  const runSearch = async (query: string, offset: number) => {
+  const runSearch = async (query: string, offset: number, onlyOpenAccess: boolean) => {
     setError(null);
     try {
       const results = await search.mutateAsync({
         query,
         offset,
         limit: PAGE_SIZE,
-        openAccessOnly: openAccessOnly || undefined,
+        openAccessOnly: onlyOpenAccess || undefined,
       });
       setHits((current) => (offset === 0 ? results.hits : [...current, ...results.hits]));
       setTotal(results.total);
       setNextOffset(results.nextOffset);
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(
+        isCommandError(cause) && cause.code === "provider_rate_limit"
+          ? `${cause.message} 설정에서 Semantic Scholar API 키를 연결하면 더 안정적으로 검색할 수 있습니다.`
+          : errorMessage(cause),
+      );
       if (offset === 0) {
         setHits([]);
         setTotal(0);
@@ -77,8 +63,9 @@ function DiscoverSearch({ onOpenPaper }: { onOpenPaper: (paperId: string) => voi
     const query = input.trim();
     if (query.length === 0) return;
     setSubmitted(query);
+    setSubmittedOpenAccessOnly(openAccessOnly);
     setHits([]);
-    void runSearch(query, 0);
+    void runSearch(query, 0, openAccessOnly);
   };
 
   const firstSearchPending = search.isPending && hits.length === 0;
@@ -163,7 +150,9 @@ function DiscoverSearch({ onOpenPaper }: { onOpenPaper: (paperId: string) => voi
                 <Button
                   variant="outline"
                   loading={search.isPending}
-                  onClick={() => void runSearch(submitted, nextOffset)}
+                  onClick={() =>
+                    void runSearch(submitted, nextOffset, submittedOpenAccessOnly)
+                  }
                 >
                   더 보기
                 </Button>
@@ -199,7 +188,7 @@ function ResultCard({
   const runImport = async () => {
     setError(null);
     try {
-      setOutcome(await importPaper.mutateAsync({ paper }));
+      setOutcome(await importPaper.mutateAsync({ paperId: paper.id }));
     } catch (cause) {
       setError(errorMessage(cause));
     }
@@ -208,7 +197,9 @@ function ResultCard({
   // An imported/duplicate outcome carries the local paper id, so the card can
   // offer to open it in the reader.
   const localPaperId =
-    outcome && outcome.outcome !== "rejected" ? outcome.paperId : null;
+    outcome && outcome.outcome !== "rejected"
+      ? outcome.paperId
+      : paper.localPaperId;
   const inLibrary = paper.alreadyInLibrary || localPaperId !== null;
   const importable = paper.pdfUrl !== null;
 

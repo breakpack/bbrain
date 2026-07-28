@@ -104,6 +104,55 @@ pub fn delete_obsidian_rest_key() -> Result<()> {
     Ok(())
 }
 
+/// Semantic Scholar is not an LLM provider, so its optional API key uses a
+/// dedicated keychain account and never expands the `Provider` enum.
+pub const SEMANTIC_SCHOLAR_ACCOUNT: &str = "semantic-scholar";
+
+static SEMANTIC_SCHOLAR_KEY_CACHE: std::sync::Mutex<Option<Option<String>>> =
+    std::sync::Mutex::new(None);
+
+fn semantic_scholar_entry() -> Result<keyring::Entry> {
+    Ok(keyring::Entry::new(SERVICE, SEMANTIC_SCHOLAR_ACCOUNT)?)
+}
+
+pub fn set_semantic_scholar_key(api_key: &str) -> Result<String> {
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err(AppError::InvalidInput("empty semantic scholar api key".into()));
+    }
+    semantic_scholar_entry()?.set_password(key)?;
+    *SEMANTIC_SCHOLAR_KEY_CACHE.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(Some(key.to_string()));
+    Ok(format!("{SERVICE}/{SEMANTIC_SCHOLAR_ACCOUNT}"))
+}
+
+pub fn get_semantic_scholar_key() -> Result<Option<String>> {
+    if let Some(cached) = SEMANTIC_SCHOLAR_KEY_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        return Ok(cached);
+    }
+    let value = match semantic_scholar_entry()?.get_password() {
+        Ok(key) => Some(key),
+        Err(keyring::Error::NoEntry) => None,
+        Err(error) => return Err(error.into()),
+    };
+    *SEMANTIC_SCHOLAR_KEY_CACHE.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(value.clone());
+    Ok(value)
+}
+
+pub fn delete_semantic_scholar_key() -> Result<()> {
+    match semantic_scholar_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(error) => return Err(error.into()),
+    }
+    *SEMANTIC_SCHOLAR_KEY_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some(None);
+    Ok(())
+}
+
 /// Serves each provider's key from memory after the first read, and invalidates
 /// that entry on any write, so a re-keyed provider is never served a stale
 /// value. Wraps any `CredentialStore`.

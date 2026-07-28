@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "@/lib/ipc";
-import type { DiscoverQuery, DiscoveredPaper } from "@/lib/types";
+import type { DiscoverQuery } from "@/lib/types";
 
 /**
  * External scholarly search is imperative (a submit, then "더 보기"), not a
@@ -18,8 +18,8 @@ export function useSearchPapers() {
 export function useImportDiscoveredPaper() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ paper, groupId }: { paper: DiscoveredPaper; groupId?: string }) =>
-      api.importDiscoveredPaper(paper, groupId),
+    mutationFn: ({ paperId, groupId }: { paperId: string; groupId?: string }) =>
+      api.importDiscoveredPaper(paperId, groupId),
     onSuccess: () => client.invalidateQueries({ queryKey: ["papers"] }),
   });
 }

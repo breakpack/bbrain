@@ -97,6 +97,8 @@ pub fn run() {
             commands::library::import_papers,
             discover::search_papers,
             discover::import_discovered_paper,
+            discover::configure_semantic_scholar,
+            discover::remove_semantic_scholar,
             commands::library::list_papers,
             commands::library::get_paper,
             commands::library::update_paper,

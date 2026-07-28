@@ -6,7 +6,6 @@ import type {
   DiscoverQuery,
   ObsidianRestHealth,
   DiscoverResults,
-  DiscoveredPaper,
   ExtractedPage,
   ChatScope,
   ChatSession,
@@ -203,8 +202,13 @@ export const api = {
   /// pipeline, returning the same ImportOutcome shape as a local import. Rejects
   /// when the paper has no downloadable PDF. Backend command:
   /// `import_discovered_paper`.
-  importDiscoveredPaper: (paper: DiscoveredPaper, targetGroupId?: string) =>
-    invoke<ImportOutcome>("import_discovered_paper", { paper, targetGroupId }),
+  importDiscoveredPaper: (paperId: string, targetGroupId?: string) =>
+    invoke<ImportOutcome>("import_discovered_paper", { paperId, targetGroupId }),
+
+  configureSemanticScholar: (apiKey: string) =>
+    invoke<void>("configure_semantic_scholar", { input: { apiKey } }),
+
+  removeSemanticScholar: () => invoke<void>("remove_semantic_scholar"),
 
   // --- chat and search ------------------------------------------------------
 

@@ -20,6 +20,7 @@ function hit(overrides: Partial<DiscoveredPaper> = {}): DiscoveredPaper {
     doi: "10.48550/arXiv.1706.03762",
     citationCount: 100000,
     alreadyInLibrary: false,
+    localPaperId: null,
     ...overrides,
   };
 }
@@ -29,18 +30,7 @@ async function submitSearch(term = "attention") {
   await userEvent.click(screen.getByRole("button", { name: "검색" }));
 }
 
-describe("discover coming-soon gate", () => {
-  it("shows the 준비 중 notice instead of the search UI", () => {
-    renderWithQuery(<DiscoverPage onOpenPaper={() => {}} />);
-
-    expect(screen.getByText("준비 중인 기능입니다")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /검색/ })).not.toBeInTheDocument();
-  });
-});
-
-// The search UI is gated behind COMING_SOON (Semantic Scholar shared-pool rate
-// limits) — these specs describe the real feature and come back with it.
-describe.skip("discover", () => {
+describe("discover", () => {
   beforeEach(() => {
     invokeMock.mockReset();
   });
@@ -122,7 +112,7 @@ describe.skip("discover", () => {
     await submitSearch();
 
     await userEvent.click(await screen.findByRole("button", { name: "라이브러리에 가져오기" }));
-    expect(imported).toMatchObject({ paper: { id: "semantic-scholar:abc" } });
+    expect(imported).toMatchObject({ paperId: "semantic-scholar:abc" });
 
     await userEvent.click(await screen.findByRole("button", { name: "읽기" }));
     expect(opened).toEqual(["p-new"]);
@@ -142,13 +132,19 @@ describe.skip("discover", () => {
 
   it("marks a paper already in the library instead of importing it again", async () => {
     mockCommands({
-      search_papers: () => ({ hits: [hit({ alreadyInLibrary: true })], total: 1, nextOffset: null }),
+      search_papers: () => ({
+        hits: [hit({ alreadyInLibrary: true, localPaperId: "p-existing" })],
+        total: 1,
+        nextOffset: null,
+      }),
     });
 
-    renderWithQuery(<DiscoverPage onOpenPaper={() => {}} />);
+    const opened: string[] = [];
+    renderWithQuery(<DiscoverPage onOpenPaper={(id) => opened.push(id)} />);
     await submitSearch();
 
-    expect(await screen.findByText(/이미 라이브러리에 있습니다/)).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "읽기" }));
+    expect(opened).toEqual(["p-existing"]);
   });
 
   it("loads the next page and appends to the list", async () => {

@@ -41,6 +41,8 @@ export type Settings = {
   /** Obsidian Local REST API endpoint — the channel MCP servers use. */
   obsidianRestUrl: string | null;
   hasObsidianRestKey: boolean;
+  /** Semantic Scholar key presence only; the key never crosses IPC. */
+  hasSemanticScholarKey: boolean;
   embeddingModelId: string;
   embeddingDimension: number;
   indexGeneration: number;
@@ -311,6 +313,8 @@ export type DiscoveredPaper = {
   /** The backend already holds a paper with this DOI / content, so importing
    * again would only dedupe. Lets the UI say "이미 라이브러리에 있음". */
   alreadyInLibrary: boolean;
+  /** Existing local paper id when DOI matching found one. */
+  localPaperId: string | null;
 };
 
 export type DiscoverQuery = {

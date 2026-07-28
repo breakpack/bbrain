@@ -15,6 +15,7 @@ import {
 import { BlockedJobs } from "./BlockedJobs";
 import { ObsidianSection } from "./ObsidianSection";
 import { ProviderSection } from "./ProviderSection";
+import { SemanticScholarSection } from "./SemanticScholarSection";
 import { useUpdateSettings } from "./queries";
 
 const LANGUAGES = [
@@ -90,6 +91,8 @@ export function SettingsPage({ settings }: { settings: Settings }) {
           </p>
         )}
       </Card>
+
+      <SemanticScholarSection settings={settings} />
 
       <BlockedJobs />
 

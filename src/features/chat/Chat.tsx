@@ -262,8 +262,10 @@ export function Chat({
       <div className="min-h-0 flex-1 overflow-y-auto p-md">
         {(messages.data ?? []).length === 0 && !streaming && (
           <p className="text-caption text-ink-body">
-            가져온 논문에서 찾은 근거로만 답합니다. 답변의 출처를 누르면 해당 페이지로
-            이동합니다.
+            {scope.type === "paper"
+              ? "현재 논문을 우선 검색해 답합니다."
+              : "라이브러리 전체를 검색해 답합니다."}{" "}
+            관련 근거가 없으면 일반 지식으로도 답하며, 논문 출처는 해당 페이지로 연결됩니다.
           </p>
         )}
 
@@ -282,7 +284,7 @@ export function Chat({
             <li className="flex flex-col gap-1">
               <span className="text-caption text-ink-body">Bbrain</span>
               <p className="whitespace-pre-wrap rounded-card bg-canvas-soft p-md text-caption text-ink">
-                {streaming.text || "근거를 찾는 중…"}
+                {streaming.text || "답변을 준비하는 중…"}
               </p>
             </li>
           )}

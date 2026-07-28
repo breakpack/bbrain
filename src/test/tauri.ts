@@ -76,6 +76,7 @@ export function settingsFixture(overrides: Partial<Settings> = {}): Settings {
     obsidianVaultPath: null,
     obsidianRestUrl: null,
     hasObsidianRestKey: false,
+    hasSemanticScholarKey: false,
     embeddingModelId: "intfloat/multilingual-e5-small",
     embeddingDimension: 384,
     indexGeneration: 1,

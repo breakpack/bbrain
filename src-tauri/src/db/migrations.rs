@@ -66,6 +66,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "title_source",
         sql: include_str!("../../migrations/0011_title_source.sql"),
     },
+    Migration {
+        version: 12,
+        name: "semantic_scholar_key",
+        sql: include_str!("../../migrations/0012_semantic_scholar_key.sql"),
+    },
 ];
 
 pub fn current_version(conn: &Connection) -> Result<i64> {

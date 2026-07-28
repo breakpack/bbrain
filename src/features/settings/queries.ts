@@ -54,6 +54,22 @@ export function useRemoveProvider() {
   });
 }
 
+export function useConfigureSemanticScholar() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (apiKey: string) => api.configureSemanticScholar(apiKey),
+    onSuccess: () => client.invalidateQueries({ queryKey: settingsKey }),
+  });
+}
+
+export function useRemoveSemanticScholar() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.removeSemanticScholar,
+    onSuccess: () => client.invalidateQueries({ queryKey: settingsKey }),
+  });
+}
+
 /** Only fetched once a key for the provider exists. */
 export function useProviderModels(
   provider: Provider,

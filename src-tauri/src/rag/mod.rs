@@ -14,7 +14,7 @@ use embedder::{to_blob, Embedder};
 use search::Candidate;
 
 /// Where a search may look (DEVELOPMENT.md §11.2).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type", content = "id")]
 pub enum Scope {
     Paper(String),
@@ -86,7 +86,10 @@ fn embed_paper_blocking(app: &AppHandle, paper_id: &str) -> Result<()> {
                 "DELETE FROM chunk_vectors WHERE chunk_id = ?1 AND index_generation = ?2",
                 params![chunk_id, generation],
             )?;
-            tx.execute("DELETE FROM chunks_fts WHERE chunk_id = ?1", params![chunk_id])?;
+            tx.execute(
+                "DELETE FROM chunks_fts WHERE chunk_id = ?1",
+                params![chunk_id],
+            )?;
         }
         tx.execute("DELETE FROM chunks WHERE paper_id = ?1", params![paper_id])?;
 
@@ -202,16 +205,21 @@ pub fn retrieve(
 
     // Metadata and keyword search must keep working while the embedding model is
     // still downloading or the library is being re-indexed (§11.2).
-    let vector_ranked = match embedder.embed_query(question) {
-        Ok(query_vector) => vector_search(conn, &query_vector, generation)?,
+    let query_vector = match embedder.embed_query(question) {
+        Ok(query_vector) => Some(query_vector),
         Err(AppError::EmbeddingModelUnavailable) => {
             tracing::info!("embedding model unavailable; falling back to keyword search");
-            Vec::new()
+            None
         }
         Err(error) => return Err(error),
     };
 
-    let keyword_ranked = keyword_search(conn, question)?;
+    let vector_ranked = match &query_vector {
+        Some(query_vector) => vector_search(conn, query_vector, generation, scope, &scoped)?,
+        None => Vec::new(),
+    };
+
+    let keyword_ranked = keyword_search(conn, question, scope, &scoped)?;
 
     let fused = search::reciprocal_rank_fusion(&vector_ranked, &keyword_ranked);
 
@@ -230,15 +238,55 @@ pub fn retrieve(
 
     // With no query vector there is nothing to diversify against, so keep the
     // fused order.
-    let selected = match embedder.embed_query(question) {
-        Ok(query_vector) => search::mmr(&query_vector, &candidates, search::MAX_CHUNKS),
-        Err(_) => candidates.into_iter().take(search::MAX_CHUNKS).collect(),
+    let selected = match query_vector {
+        Some(query_vector) => search::mmr(&query_vector, &candidates, search::MAX_CHUNKS),
+        None => candidates.into_iter().take(search::MAX_CHUNKS).collect(),
     };
 
     Ok(search::cap_papers(selected, search::MAX_PAPERS))
 }
 
-fn vector_search(conn: &Connection, query: &[f32], generation: i64) -> Result<Vec<String>> {
+fn vector_search(
+    conn: &Connection,
+    query: &[f32],
+    generation: i64,
+    scope: &Scope,
+    scoped: &[String],
+) -> Result<Vec<String>> {
+    // A post-filter over the library-wide top 40 can lose every chunk from the
+    // current paper. For bounded scopes rank only vectors inside that scope.
+    if !matches!(scope, Scope::Library) {
+        let placeholders = std::iter::repeat("?")
+            .take(scoped.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT v.chunk_id, v.embedding
+             FROM chunk_vectors v JOIN chunks c ON c.id = v.chunk_id
+             WHERE v.index_generation = ? AND c.paper_id IN ({placeholders})"
+        );
+        let mut values = Vec::<rusqlite::types::Value>::with_capacity(scoped.len() + 1);
+        values.push(generation.into());
+        values.extend(scoped.iter().cloned().map(Into::into));
+
+        let mut statement = conn.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(values), |row| {
+            let blob: Vec<u8> = row.get(1)?;
+            Ok((row.get::<_, String>(0)?, embedder::from_blob(&blob)))
+        })?;
+        let mut ranked = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        ranked.sort_by(|a, b| {
+            embedder::cosine(query, &b.1)
+                .partial_cmp(&embedder::cosine(query, &a.1))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        return Ok(ranked
+            .into_iter()
+            .take(search::CANDIDATES_PER_SOURCE)
+            .map(|(id, _)| id)
+            .collect());
+    }
+
     let mut statement = conn.prepare(
         "SELECT chunk_id FROM chunk_vectors
          WHERE embedding MATCH ?1 AND k = ?2 AND index_generation = ?3
@@ -246,39 +294,69 @@ fn vector_search(conn: &Connection, query: &[f32], generation: i64) -> Result<Ve
     )?;
 
     let rows = statement.query_map(
-        params![to_blob(query), search::CANDIDATES_PER_SOURCE as i64, generation],
+        params![
+            to_blob(query),
+            search::CANDIDATES_PER_SOURCE as i64,
+            generation
+        ],
         |row| row.get::<_, String>(0),
     )?;
 
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn keyword_search(conn: &Connection, question: &str) -> Result<Vec<String>> {
+fn keyword_search(
+    conn: &Connection,
+    question: &str,
+    scope: &Scope,
+    scoped: &[String],
+) -> Result<Vec<String>> {
     let query = search::fts_query(question);
     if query.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut statement = conn.prepare(
-        "SELECT chunk_id FROM chunks_fts
-         WHERE chunks_fts MATCH ?1
-         ORDER BY bm25(chunks_fts)
-         LIMIT ?2",
-    )?;
+    let (sql, values) = if matches!(scope, Scope::Library) {
+        (
+            "SELECT chunk_id FROM chunks_fts
+             WHERE chunks_fts MATCH ?
+             ORDER BY bm25(chunks_fts)
+             LIMIT ?"
+                .to_string(),
+            vec![
+                rusqlite::types::Value::from(query),
+                rusqlite::types::Value::from(search::CANDIDATES_PER_SOURCE as i64),
+            ],
+        )
+    } else {
+        let placeholders = std::iter::repeat("?")
+            .take(scoped.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT chunk_id FROM chunks_fts
+             WHERE chunks_fts MATCH ? AND paper_id IN ({placeholders})
+             ORDER BY bm25(chunks_fts)
+             LIMIT ?"
+        );
+        let mut values = Vec::with_capacity(scoped.len() + 2);
+        values.push(rusqlite::types::Value::from(query));
+        values.extend(scoped.iter().cloned().map(Into::into));
+        values.push(rusqlite::types::Value::from(
+            search::CANDIDATES_PER_SOURCE as i64,
+        ));
+        (sql, values)
+    };
 
-    let rows = statement.query_map(
-        params![query, search::CANDIDATES_PER_SOURCE as i64],
-        |row| row.get::<_, String>(0),
-    )?;
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(values), |row| {
+        row.get::<_, String>(0)
+    })?;
 
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn load_candidate(
-    conn: &Connection,
-    chunk_id: &str,
-    generation: i64,
-) -> Result<Option<Candidate>> {
+fn load_candidate(conn: &Connection, chunk_id: &str, generation: i64) -> Result<Option<Candidate>> {
     let row = conn
         .query_row(
             "SELECT c.id, c.paper_id, c.page_start, c.page_end, c.section, c.text,
@@ -295,7 +373,9 @@ fn load_candidate(
                     page_end: row.get(3)?,
                     section: row.get(4)?,
                     text: row.get(5)?,
-                    embedding: embedding.map(|blob| embedder::from_blob(&blob)).unwrap_or_default(),
+                    embedding: embedding
+                        .map(|blob| embedder::from_blob(&blob))
+                        .unwrap_or_default(),
                 })
             },
         )
@@ -350,6 +430,7 @@ pub fn to_hits(conn: &Connection, candidates: &[Candidate]) -> Result<Vec<Search
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Database;
 
     #[test]
     fn the_paper_vector_is_the_normalized_mean_of_its_chunks() {
@@ -358,7 +439,10 @@ mod tests {
         let mean = mean_normalized(&vectors);
 
         let norm: f32 = mean.iter().map(|v| v * v).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-6, "the paper vector must be a unit vector");
+        assert!(
+            (norm - 1.0).abs() < 1e-6,
+            "the paper vector must be a unit vector"
+        );
         assert!((mean[0] - mean[1]).abs() < 1e-6);
     }
 
@@ -366,5 +450,31 @@ mod tests {
     fn a_paper_with_no_chunks_does_not_panic() {
         let mean = mean_normalized(&[]);
         assert_eq!(mean.len(), embedder::DIMENSION);
+    }
+
+    #[test]
+    fn paper_keyword_search_cannot_leak_hits_from_another_paper() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO chunks_fts (chunk_id, paper_id, text) VALUES (?1, ?2, ?3)",
+            params!["c1", "p1", "attention mechanism"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chunks_fts (chunk_id, paper_id, text) VALUES (?1, ?2, ?3)",
+            params!["c2", "p2", "attention mechanism"],
+        )
+        .unwrap();
+
+        let hits = keyword_search(
+            &conn,
+            "attention",
+            &Scope::Paper("p1".into()),
+            &["p1".into()],
+        )
+        .unwrap();
+
+        assert_eq!(hits, vec!["c1"]);
     }
 }

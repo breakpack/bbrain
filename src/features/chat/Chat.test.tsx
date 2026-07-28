@@ -30,6 +30,36 @@ describe("floating chat", () => {
     expect(await screen.findByRole("heading", { name: /질문/ })).toBeInTheDocument();
   });
 
+  it("keeps an open paper chat scoped to that paper", async () => {
+    let created: unknown = null;
+    let started: unknown = null;
+    mockCommands({
+      create_chat_session: (args) => {
+        created = args;
+        return "session-paper";
+      },
+      list_chat_messages: () => [],
+      start_chat: (args) => {
+        started = args;
+        return null;
+      },
+    });
+
+    renderWithQuery(<Chat scope={{ type: "paper", id: "p42" }} />);
+    await userEvent.click(screen.getByRole("button", { name: "AI에게 질문하기" }));
+    await userEvent.type(await screen.findByLabelText("질문"), "이 논문의 결론은?");
+    const send = await screen.findByRole("button", { name: "보내기" });
+    await waitFor(() => expect(send).not.toBeDisabled());
+    await userEvent.click(send);
+
+    expect(created).toMatchObject({
+      input: { scope: { type: "paper", id: "p42" } },
+    });
+    expect(started).toMatchObject({
+      request: { scope: { type: "paper", id: "p42" } },
+    });
+  });
+
   it("streams deltas into the panel and clears them on completion", async () => {
     mockCommands({
       create_chat_session: () => "session-1",

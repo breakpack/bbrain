@@ -1,16 +1,14 @@
 # 논문 찾기 (Discover) — 백엔드 IPC 계약 명세
 
-프론트엔드(Track V, 뷰어)는 "논문 찾기" 화면과 두 개의 IPC 호출을 이미 구현했다.
-아래 두 Rust 커맨드는 **아직 구현되어 있지 않다.** 코디네이터/Track A가 같은 이름·같은
-직렬화 형태로 구현하면 프론트가 그대로 붙는다. 프론트 계약은 `src/lib/ipc.ts`,
-타입은 `src/lib/types.ts`(`DiscoveredPaper`, `DiscoverQuery`, `DiscoverResults`) 참고.
+프론트엔드와 Rust 코어가 아래 계약으로 구현되어 있다. 프론트 계약은
+`src/lib/ipc.ts`, 타입은 `src/lib/types.ts`를 함께 갱신한다.
 
 ## 출처
 
 Semantic Scholar Academic Graph API (`https://api.semanticscholar.org/graph/v1`).
-무료·공개. API 키는 선택(있으면 rate limit 완화). 키를 쓴다면 다른 provider 키와
-동일하게 **OS credential store**에만 저장하고 로그·오류 메시지에 넣지 않는다
-(CLAUDE.md 불변식). 프론트에는 키 존재 여부조차 전달하지 않는다.
+무료·공개. API 키는 선택이며 설정 화면에서 연결할 수 있다. 키는 다른 provider 키와
+동일하게 **OS credential store**에만 저장하고 SQLite에는 존재 여부를 나타내는
+credential reference만 둔다. 키 값은 로그·오류·프론트 응답에 포함하지 않는다.
 
 ## 커맨드 1: `search_papers`
 
@@ -56,6 +54,7 @@ search_papers(query: DiscoverQuery) -> DiscoverResults
 | `doi` | `externalIds.DOI` 또는 null |
 | `citationCount` | `citationCount` 또는 null |
 | `alreadyInLibrary` | **로컬 DB 조회**: 같은 DOI 또는 이미 알려진 sha256이 있으면 true |
+| `localPaperId` | DOI가 로컬 논문과 일치하면 해당 로컬 ID, 아니면 null |
 
 `alreadyInLibrary`는 DOI로 기존 논문을 매칭한다(대소문자 무시). DOI가 없으면 false로
 두어도 무방(가져오기 시 content hash로 최종 dedupe됨).
@@ -63,10 +62,13 @@ search_papers(query: DiscoverQuery) -> DiscoverResults
 ## 커맨드 2: `import_discovered_paper`
 
 ```
-import_discovered_paper(paper: DiscoveredPaper, targetGroupId?: string) -> ImportOutcome
+import_discovered_paper(paperId: string, targetGroupId?: string) -> ImportOutcome
 ```
 
-- `paper.pdfUrl`이 null이면 프론트가 애초에 버튼을 숨기지만, 백엔드도 방어적으로
+- 프론트에서 PDF URL이나 메타데이터를 되돌려 보내지 않는다. Rust 코어가
+  `semantic-scholar:<paperId>`를 Semantic Scholar에서 다시 조회하고 그 응답의
+  `openAccessPdf.url`만 사용한다.
+- 다시 조회한 `pdfUrl`이 null이면 프론트가 애초에 버튼을 숨기지만, 백엔드도 방어적으로
   `rejected`(사유: 다운로드 불가)를 반환한다.
 - `pdfUrl`에서 PDF를 다운로드해 임시 파일로 저장한 뒤 **기존 `import_papers`
   파이프라인을 재사용**한다(sha256 dedupe, 관리 저장소 복사, 추출·썸네일 job 큐잉).
@@ -78,13 +80,26 @@ import_discovered_paper(paper: DiscoveredPaper, targetGroupId?: string) -> Impor
   PDF만으로는 서지정보가 부실할 수 있으므로 이 메타데이터가 더 정확하다.
 
 ### 안전
-- 다운로드 URL은 신뢰 출처(Semantic Scholar가 제공한 openAccessPdf.url)로 제한.
+- 다운로드 URL은 다시 조회한 Semantic Scholar의 `openAccessPdf.url`로 제한하고
+  HTTPS만 허용한다.
+- 다운로드는 임시 파일로 스트리밍하며 100MB를 넘으면 중단하고 부분 파일을 제거한다.
 - 응답 본문·헤더를 오류 메시지에 넣지 않는다. 실패는 `AppError`로 만들어
   `redacted_message()`로 사용자 문구를 관리한다.
 - 네트워크 접근이므로 §네트워크 고지(networkNoticeAcceptedAt) 정책과 일관되게 처리.
 
-## 프론트 동작 요약 (참고)
-- `search_papers` 미구현 상태에서 검색하면 `unmocked/unknown command` 오류가 나고,
-  프론트는 이를 빨간 alert로 표시(프롬프트는 유지). 커맨드가 붙는 즉시 정상 동작.
+## 키 설정 커맨드
+
+```
+configure_semantic_scholar(input: { apiKey: string }) -> void
+remove_semantic_scholar() -> void
+```
+
+- 연결 시 실제 검색 요청으로 키를 검증한 후 OS credential store에 저장한다.
+- 검색 요청에는 키가 있을 때만 `x-api-key` 헤더를 추가한다.
+- 요청은 최소 1초 간격으로 직렬화하고 429/5xx는 `Retry-After` 또는 지수 backoff로
+  최대 3회 시도한다.
+
+## 프론트 동작 요약
+
 - 결과 카드: 무료 PDF 있음 → "라이브러리에 가져오기", 없음 → 안내 문구 + "출처" 링크,
-  이미 있음 → "이미 라이브러리에 있습니다", 가져온 뒤 → "읽기"/"라이브러리에서 열기".
+  이미 있음 → 로컬 논문 "읽기", 가져온 뒤 → "읽기"/"라이브러리에서 열기".

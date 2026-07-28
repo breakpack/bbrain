@@ -29,6 +29,7 @@ pub struct Settings {
     /// set and reachable, vault writes go through it; files are the fallback.
     pub obsidian_rest_url: Option<String>,
     pub has_obsidian_rest_key: bool,
+    pub has_semantic_scholar_key: bool,
     pub embedding_model_id: String,
     pub embedding_dimension: i64,
     pub index_generation: i64,
@@ -73,7 +74,8 @@ pub fn get(conn: &Connection) -> Result<Settings> {
                 embedding_model_id, embedding_dimension, index_generation,
                 network_notice_accepted_at, onboarding_completed_at,
                 deepseek_model, deepseek_credential_ref, translation_engine,
-                obsidian_rest_url, obsidian_rest_credential_ref, analysis_language
+                obsidian_rest_url, obsidian_rest_credential_ref, analysis_language,
+                semantic_scholar_credential_ref
          FROM settings WHERE id = 1",
         [],
         |row| {
@@ -99,6 +101,7 @@ pub fn get(conn: &Connection) -> Result<Settings> {
                 obsidian_rest_url: row.get(16)?,
                 has_obsidian_rest_key: row.get::<_, Option<String>>(17)?.is_some(),
                 analysis_language: row.get(18)?,
+                has_semantic_scholar_key: row.get::<_, Option<String>>(19)?.is_some(),
             })
         },
     )?;
@@ -232,6 +235,20 @@ pub fn set_obsidian_rest_credential_ref(
     Ok(())
 }
 
+/// Marks (or clears) the Semantic Scholar key's presence. The key itself never
+/// enters SQLite and is read only inside the Rust core.
+pub fn set_semantic_scholar_credential_ref(
+    conn: &Connection,
+    credential_ref: Option<&str>,
+) -> Result<()> {
+    ensure_row(conn)?;
+    conn.execute(
+        "UPDATE settings SET semantic_scholar_credential_ref = ?1, updated_at = ?2 WHERE id = 1",
+        params![credential_ref, now_iso8601()],
+    )?;
+    Ok(())
+}
+
 pub fn credential_ref(conn: &Connection, provider: Provider) -> Result<Option<String>> {
     ensure_row(conn)?;
     let column = match provider {
@@ -267,6 +284,7 @@ mod tests {
         assert!(settings.active_provider.is_none());
         assert!(!settings.has_openai_key);
         assert!(!settings.has_deepseek_key);
+        assert!(!settings.has_semantic_scholar_key);
         assert_eq!(settings.translation_engine, "google");
         assert!(settings.onboarding_completed_at.is_none());
     }
@@ -322,6 +340,31 @@ mod tests {
         set_credential_ref(&conn, Provider::OpenAi, None).unwrap();
 
         assert!(!get(&conn).unwrap().has_openai_key);
+    }
+
+    #[test]
+    fn semantic_scholar_marker_never_contains_key_material() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+
+        set_semantic_scholar_credential_ref(
+            &conn,
+            Some("com.bbrain.desktop/semantic-scholar"),
+        )
+        .unwrap();
+
+        assert!(get(&conn).unwrap().has_semantic_scholar_key);
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT semantic_scholar_credential_ref FROM settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some("com.bbrain.desktop/semantic-scholar")
+        );
     }
 
     #[test]

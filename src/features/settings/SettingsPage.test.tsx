@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -102,6 +102,26 @@ describe("settings", () => {
     const keyFields = screen.getAllByLabelText("API 키");
     expect(keyFields).toHaveLength(2);
     expect(keyFields[0]).toHaveAttribute("placeholder", "sk-...");
+  });
+
+  it("stores a Semantic Scholar key through its dedicated command", async () => {
+    const configure = vi.fn(() => null);
+    mockCommands({
+      ...BASE,
+      configure_semantic_scholar: configure,
+    });
+
+    renderWithQuery(<SettingsPage settings={settingsFixture()} />);
+    const section = screen
+      .getByRole("heading", { name: "논문 검색" })
+      .closest<HTMLElement>("div.rounded-card")!;
+    await userEvent.type(
+      within(section).getByLabelText("Semantic Scholar API 키 (선택)"),
+      "s2-test-key",
+    );
+    await userEvent.click(within(section).getByRole("button", { name: "연결" }));
+
+    expect(configure).toHaveBeenCalledWith({ input: { apiKey: "s2-test-key" } });
   });
 
   it("connects to the Obsidian Local REST API and shows the live state", async () => {
