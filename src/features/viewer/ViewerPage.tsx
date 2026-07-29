@@ -1,5 +1,5 @@
 import type { PDFPageProxy } from "pdfjs-dist";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   Languages,
@@ -7,6 +7,7 @@ import {
   Minus,
   PanelLeftClose,
   PanelLeftOpen,
+  Pencil,
   Plus,
   Sparkles,
   Trash2,
@@ -405,9 +406,7 @@ export function ViewerPage({
           )}
         </button>
 
-        <h1 className="flex-1 truncate text-caption font-medium text-ink-heading">
-          {paper?.title ?? "불러오는 중"}
-        </h1>
+        <PaperTitle paperId={paperId} title={paper?.title ?? null} />
 
         <div className="flex items-center gap-1">
           <label className="sr-only" htmlFor="page-input">
@@ -660,6 +659,65 @@ const THUMBNAIL_WIDTH = 180;
  * document scroll (driven by `currentPage`), and the rail scrolls it back into
  * view so the current page is always visible without the user scrolling here.
  */
+/**
+ * The header title, renamable in place: the pencil swaps it for an input,
+ * Enter/blur save, Escape cancels. A saved title is marked 'user' by the
+ * backend, so re-extraction never overwrites it with the in-PDF title.
+ */
+function PaperTitle({ paperId, title }: { paperId: string; title: string | null }) {
+  const client = useQueryClient();
+  const [draft, setDraft] = useState<string | null>(null);
+
+  const rename = useMutation({
+    mutationFn: (next: string) => api.updatePaper(paperId, { title: next }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["viewer", paperId] });
+      void client.invalidateQueries({ queryKey: ["papers"] });
+    },
+  });
+
+  const save = () => {
+    const next = draft?.trim();
+    setDraft(null);
+    if (!next || next === title) return;
+    rename.mutate(next);
+  };
+
+  if (draft !== null) {
+    return (
+      <input
+        autoFocus
+        aria-label="논문 제목 편집"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={save}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") save();
+          if (event.key === "Escape") setDraft(null);
+        }}
+        className="flex-1 rounded-sm border border-primary bg-canvas px-2 py-1 text-caption font-medium text-ink-heading outline-none"
+      />
+    );
+  }
+
+  return (
+    <div className="group/title flex min-w-0 flex-1 items-center gap-1">
+      <h1 className="truncate text-caption font-medium text-ink-heading">
+        {title ?? "불러오는 중"}
+      </h1>
+      {title !== null && (
+        <button
+          aria-label="논문 제목 바꾸기"
+          onClick={() => setDraft(title)}
+          className="shrink-0 rounded-sm p-1 text-ink-body opacity-0 transition-opacity duration-fast hover:text-primary focus-visible:opacity-100 group-hover/title:opacity-100"
+        >
+          <Pencil aria-hidden className="h-4 w-4" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ThumbnailRail({
   pages,
   pageCount,
