@@ -7,6 +7,8 @@ import {
   Minus,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Pencil,
   Plus,
   Sparkles,
@@ -76,6 +78,14 @@ export function ViewerPage({
   useEffect(() => {
     localStorage.setItem("bbrain.viewer.panelWidth", String(panelWidth));
   }, [panelWidth]);
+  // The tool panel (번역/하이라이트/AI 정리) collapses like the thumbnail rail;
+  // the choice sticks across papers and restarts.
+  const [panelOpen, setPanelOpen] = useState(
+    () => localStorage.getItem("bbrain.viewer.panelOpen") !== "false",
+  );
+  useEffect(() => {
+    localStorage.setItem("bbrain.viewer.panelOpen", String(panelOpen));
+  }, [panelOpen]);
   const [railWidth, setRailWidth] = useState(RAIL_DEFAULT);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [pages, setPages] = useState<PDFPageProxy[]>([]);
@@ -449,6 +459,19 @@ export function ViewerPage({
             <Plus aria-hidden className="h-[18px] w-[18px]" />
           </button>
         </div>
+
+        <button
+          aria-label={panelOpen ? "도구 패널 접기" : "도구 패널 펼치기"}
+          aria-expanded={panelOpen}
+          onClick={() => setPanelOpen((open) => !open)}
+          className="rounded-control p-2 text-ink-body hover:text-primary"
+        >
+          {panelOpen ? (
+            <PanelRightClose aria-hidden className="h-[18px] w-[18px]" />
+          ) : (
+            <PanelRightOpen aria-hidden className="h-[18px] w-[18px]" />
+          )}
+        </button>
       </header>
 
       <div className="flex min-h-0 flex-1">
@@ -578,6 +601,7 @@ export function ViewerPage({
           )}
         </div>
 
+        {panelOpen && (
         <aside
           aria-label="논문 도구"
           className={cn(
@@ -640,6 +664,7 @@ export function ViewerPage({
             {tab === "analysis" && <AnalysisTab paperId={paperId} onJump={goToPage} />}
           </div>
         </aside>
+        )}
       </div>
 
       {error && (
