@@ -5,6 +5,7 @@ import {
   FolderPlus,
   Grid2x2,
   List,
+  Pencil,
   Plus,
   Search,
   Star,
@@ -489,6 +490,16 @@ function PaperRow({
   const updatePaper = useUpdatePaper();
   const deletePaper = useDeletePaper();
   const [confirming, setConfirming] = useState(false);
+  const [editingTitle, setEditingTitle] = useState<string | null>(null);
+
+  // A hand-typed title is permanent: the backend marks it 'user', so a later
+  // re-extraction never overwrites it with the in-PDF title.
+  const saveTitle = () => {
+    const title = editingTitle?.trim();
+    setEditingTitle(null);
+    if (!title || title === paper.title) return;
+    updatePaper.mutate({ paperId: paper.id, patch: { title } });
+  };
 
   if (confirming) {
     return (
@@ -526,12 +537,29 @@ function PaperRow({
       className="group/row cursor-grab border-b border-line transition-colors duration-fast hover:bg-canvas-soft"
     >
       <td className="py-md pr-md">
-        <button
-          onClick={() => onOpen(paper.id)}
-          className="text-left text-caption font-medium text-ink-heading hover:text-primary"
-        >
-          {paper.title}
-        </button>
+        {editingTitle !== null ? (
+          <input
+            autoFocus
+            aria-label="논문 제목 편집"
+            value={editingTitle}
+            onChange={(event) => setEditingTitle(event.target.value)}
+            // The row is draggable; keep typing/click from starting a drag.
+            onMouseDown={(event) => event.stopPropagation()}
+            onBlur={saveTitle}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") saveTitle();
+              if (event.key === "Escape") setEditingTitle(null);
+            }}
+            className="w-full rounded-sm border border-primary bg-canvas px-2 py-1 text-caption font-medium text-ink-heading outline-none"
+          />
+        ) : (
+          <button
+            onClick={() => onOpen(paper.id)}
+            className="text-left text-caption font-medium text-ink-heading hover:text-primary"
+          >
+            {paper.title}
+          </button>
+        )}
       </td>
       <td className="py-md pr-md text-caption text-ink-body">
         {paper.authors.slice(0, 2).join(", ") || "—"}
@@ -566,6 +594,15 @@ function PaperRow({
               aria-hidden
               className={cn("h-[18px] w-[18px]", paper.isFavorite && "fill-primary text-primary")}
             />
+          </button>
+
+          <button
+            aria-label={`${paper.title} 이름 바꾸기`}
+            onClick={() => setEditingTitle(paper.title)}
+            onMouseDown={(event) => event.stopPropagation()}
+            className="rounded-sm p-1 text-ink-body opacity-0 transition-opacity duration-fast hover:text-primary focus-visible:opacity-100 group-hover/row:opacity-100"
+          >
+            <Pencil aria-hidden className="h-[18px] w-[18px]" />
           </button>
 
           <button

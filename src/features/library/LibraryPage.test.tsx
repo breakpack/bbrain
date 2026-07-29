@@ -120,6 +120,51 @@ describe("library", () => {
     expect(patched).toMatchObject({ paperId: "p1", patch: { isFavorite: true } });
   });
 
+  it("renames a paper inline and saves on Enter", async () => {
+    let patched: unknown = null;
+    mockCommands({
+      ...BASE,
+      list_papers: () => [paper()],
+      update_paper: (args) => {
+        patched = args;
+        return paper({ title: "내가 정한 제목" });
+      },
+    });
+
+    renderWithQuery(<LibraryPage onOpenPaper={() => {}} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Attention Is All You Need 이름 바꾸기" }),
+    );
+
+    const field = screen.getByLabelText("논문 제목 편집");
+    await userEvent.clear(field);
+    await userEvent.type(field, "내가 정한 제목{Enter}");
+
+    expect(patched).toMatchObject({ paperId: "p1", patch: { title: "내가 정한 제목" } });
+  });
+
+  it("cancels an inline rename with Escape without touching the backend", async () => {
+    let patched: unknown = null;
+    mockCommands({
+      ...BASE,
+      list_papers: () => [paper()],
+      update_paper: (args) => {
+        patched = args;
+        return paper();
+      },
+    });
+
+    renderWithQuery(<LibraryPage onOpenPaper={() => {}} />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Attention Is All You Need 이름 바꾸기" }),
+    );
+    await userEvent.type(screen.getByLabelText("논문 제목 편집"), " 수정{Escape}");
+
+    expect(screen.queryByLabelText("논문 제목 편집")).toBeNull();
+    expect(patched).toBeNull();
+    expect(screen.getByText("Attention Is All You Need")).toBeInTheDocument();
+  });
+
   it("files a paper into a group from the row's group menu", async () => {
     let patched: unknown = null;
     mockCommands({
